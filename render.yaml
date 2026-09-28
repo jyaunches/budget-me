@@ -1,0 +1,68 @@
+# Render Blueprint specification for Budget Me
+# Docs: https://render.com/docs/blueprint-spec
+#
+# Usage:
+# 1. Push this file to your repository
+# 2. Go to Render Dashboard > Blueprints > New Blueprint Instance
+# 3. Select your repository
+# 4. Enter values for secrets marked with sync: false
+
+services:
+  - type: web
+    name: budget-me
+    runtime: docker
+    region: oregon
+    # Hobby/Sandbox only. Render does not support Free instances for production
+    # applications; choose a paid plan before connecting live financial data.
+    plan: free
+
+    # Docker settings
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+
+    # Health check (matches Dockerfile HEALTHCHECK)
+    healthCheckPath: /_stcore/health
+
+    # The branch is only the Blueprint bootstrap source. Automatic deployment
+    # from moving main is disabled; manually deploy an exact reviewed commit.
+    autoDeploy: false
+    branch: main
+
+    # Environment variables
+    envVars:
+      # Non-sensitive settings
+      - key: ENVIRONMENT
+        # Application runtime profile, not a declaration that Free is suitable
+        # for a live production deployment.
+        value: production
+      - key: PLAID_ENV
+        value: sandbox
+      - key: AUTH_REQUIRED
+        value: "true"
+      - key: STREAMLIT_SERVER_PORT
+        value: "10000"
+
+      # Sensitive variables - set manually in Render Dashboard
+      # These will NOT be committed to git
+      - key: DATABASE_URL
+        sync: false
+      - key: APP_TOKEN_ENC_KEY
+        sync: false
+      - key: PLAID_CLIENT_ID
+        sync: false
+      - key: PLAID_SECRET
+        sync: false
+      - key: PLAID_REDIRECT_URI
+        sync: false  # Set to https://<your-service>.onrender.com for OAuth banks
+
+      # Google OAuth (for Streamlit authentication)
+      - key: AUTH_ALLOWED_EMAILS
+        sync: false  # Comma-separated emails permitted to access this deployment
+      - key: AUTH_COOKIE_SECRET
+        sync: false  # Generate with: openssl rand -base64 32
+      - key: GOOGLE_CLIENT_ID
+        sync: false  # From Google Cloud Console OAuth client
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false  # From Google Cloud Console OAuth client
+      - key: AUTH_REDIRECT_URI
+        sync: false  # Set to https://<your-service>.onrender.com/oauth2callback

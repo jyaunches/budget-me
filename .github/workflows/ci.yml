@@ -1,0 +1,204 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    name: Runtime dependency audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Audit locked runtime dependencies
+        run: |
+          uv sync --frozen --all-extras
+          make audit
+
+  unit:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    env:
+      # Synthetic values only. No provider or database secrets belong in unit CI.
+      APP_TOKEN_ENC_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
+      PLAID_CLIENT_ID: test-client
+      PLAID_SECRET: test-secret
+      PLAID_ENV: sandbox
+      AUTH_REQUIRED: "false"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen --all-extras
+
+      - name: Lint
+        run: uv run ruff check src tests
+
+      - name: Check formatting
+        run: uv run ruff format --check src tests
+
+      - name: Run unit tests
+        run: uv run pytest tests/unit -q
+
+  database:
+    name: PostgreSQL migration and behavior
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: budget_me_test
+          POSTGRES_PASSWORD: budget_me_test
+          POSTGRES_DB: budget_me_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U budget_me_test -d budget_me_test"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+
+    env:
+      BUDGET_ME_DISABLE_DOTENV: "1"
+      BUDGET_ME_ALLOW_INTEGRATION_TESTS: "1"
+      BUDGET_ME_ALLOW_DATABASE_TESTS: "1"
+      BUDGET_ME_TEST_DATABASE_URL: postgresql://budget_me_test:budget_me_test@127.0.0.1:5432/budget_me_test
+      APP_TOKEN_ENC_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
+      PLAID_CLIENT_ID: ""
+      PLAID_SECRET: ""
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen --all-extras
+
+      - name: Validate disposable database target
+        run: >-
+          uv run pytest
+          tests/integration/test_database_readiness.py::test_database_target_is_disposable
+          -q --no-cov -m database_integration
+
+      - name: Migrate empty PostgreSQL database to head
+        env:
+          DATABASE_URL: ${{ env.BUDGET_ME_TEST_DATABASE_URL }}
+        run: uv run alembic upgrade head
+
+      - name: Verify migration head and model metadata
+        env:
+          DATABASE_URL: ${{ env.BUDGET_ME_TEST_DATABASE_URL }}
+        run: |
+          uv run alembic current --check-heads
+          uv run alembic check
+
+      - name: Run database-only integration tests
+        run: uv run pytest tests/integration -q --no-cov -m database_integration
+
+  artifacts:
+    name: Source package and container smoke
+    runs-on: ubuntu-latest
+
+    env:
+      # Synthetic, provider-free startup values. The smoke container has no
+      # external network and can reach only its own Streamlit health endpoint.
+      BUDGET_ME_DISABLE_DOTENV: "1"
+      DATABASE_URL: postgresql://budget_me_ci:budget_me_ci@127.0.0.1:1/budget_me_ci
+      APP_TOKEN_ENC_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
+      PLAID_CLIENT_ID: ""
+      PLAID_SECRET: ""
+      PLAID_ENV: sandbox
+      AUTH_REQUIRED: "false"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Build source distribution and wheel
+        run: uv build
+
+      - name: Build container
+        run: docker build --tag budget-me-ci:${{ github.sha }} .
+
+      - name: Start container without external network access
+        run: |
+          docker run --detach --name budget-me-ci --network none \
+            --env BUDGET_ME_DISABLE_DOTENV \
+            --env DATABASE_URL \
+            --env APP_TOKEN_ENC_KEY \
+            --env PLAID_CLIENT_ID \
+            --env PLAID_SECRET \
+            --env PLAID_ENV \
+            --env AUTH_REQUIRED \
+            budget-me-ci:${{ github.sha }}
+
+      - name: Verify Streamlit health endpoint
+        run: |
+          for attempt in $(seq 1 30); do
+            if docker exec budget-me-ci \
+              curl --fail --silent http://127.0.0.1:10000/_stcore/health \
+              | grep --quiet '^ok$'; then
+              exit 0
+            fi
+
+            if [ "$(docker inspect --format '{{.State.Running}}' budget-me-ci)" != "true" ]; then
+              docker logs budget-me-ci
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          docker logs budget-me-ci
+          exit 1
+
+      - name: Remove smoke container
+        if: always()
+        run: docker rm --force budget-me-ci || true

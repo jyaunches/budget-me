@@ -1,0 +1,146 @@
+# Sanitized category taxonomy and starter mappings distributed with the app.
+# Installation-specific overrides and learned rules live in Supabase/PostgreSQL.
+# Use `budget-me rules import|export`; never add household data to this file.
+
+categories:
+  groceries:
+    description: Food purchased for home consumption
+    examples: [Aldi, Costco, Trader Joe's]
+  dining:
+    description: Restaurants, coffee shops, and takeout
+    examples: [Chipotle, Panera Bread, Starbucks]
+  subscriptions:
+    description: Recurring digital services and memberships
+    examples: [Netflix, Spotify, YouTube Premium]
+  shopping:
+    description: General retail purchases
+    examples: [Amazon, Best Buy, Target]
+  transportation:
+    description: Fuel, tolls, transit, rideshare, and parking
+    examples: [Chevron, Lyft, Uber]
+  utilities:
+    description: Electric, gas, water, phone, and internet
+    examples: [AT&T, Comcast, Verizon]
+  entertainment:
+    description: Events, movies, games, concerts, and hobbies
+    examples: [AMC Theatres, Steam, Ticketmaster]
+  health:
+    description: Medical expenses, pharmacy, fitness, and wellness
+    examples: [CVS, Planet Fitness, Walgreens]
+  home:
+    description: Home improvement, maintenance, and furniture
+    examples: [Ace Hardware, IKEA, Lowe's]
+  travel:
+    description: Hotels, flights, rental cars, and vacation expenses
+    examples: [Airbnb, Marriott, United Airlines]
+  fees:
+    description: Bank fees, interest charges, and service fees
+    examples: [Annual Fee, Interest Charge, Overdraft Fee]
+  giving:
+    description: Donations and charitable contributions
+    examples: [Red Cross, United Way]
+  gifts:
+    description: Gifts and celebration purchases
+    examples: [Hallmark, 1-800-Flowers]
+  childcare:
+    description: Daycare, children's activities, and supplies
+    examples: [KinderCare, YMCA]
+  insurance:
+    description: Auto, home, renters, and life insurance
+    examples: [Allstate, Geico, State Farm]
+  auto:
+    description: Vehicle payments, maintenance, repairs, and charging
+    examples: [AutoZone, Jiffy Lube]
+  education:
+    description: Tuition, books, courses, and school supplies
+    examples: [Coursera, College Tuition]
+  personal_care:
+    description: Beauty, haircare, eyewear, and personal grooming
+    examples: [Barber, Salon]
+  hobbyist_eng:
+    description: Personal engineering projects, AI tools, and cloud hosting
+    examples: [GitHub, OpenAI]
+  shipping:
+    description: Postage, shipping, and mail services
+    examples: [FedEx, UPS, U.S. Post Office]
+  pets:
+    description: Pet food, supplies, grooming, and veterinary care
+    examples: [Chewy, Petco, PetSmart]
+  alcohol:
+    description: Liquor stores, breweries, and wine shops
+    examples: [Total Wine]
+  taxes:
+    description: Property, county, state, and local taxes
+    examples: [Property Tax]
+  mortgage:
+    description: Mortgage principal and interest payments
+    examples: [Mortgage Payment]
+  landscaping:
+    description: Lawn care, landscaping, and outdoor maintenance
+    examples: [Lawn Care]
+  credit_card_payment:
+    description: Payments to credit cards, not new spending
+    examples: [Credit Card Autopay]
+  transfer:
+    description: Transfers between accounts, not spending
+    examples: [Internal Transfer, Zelle Transfer]
+  uncategorized:
+    description: Default category for unmatched transactions
+    examples: []
+  reimbursement:
+    description: Reimbursements excluded from spending calculations
+    examples: [Employer Expense Reimbursement]
+
+merchants:
+  Aldi: groceries
+  Amazon: shopping
+  Amazon Prime: subscriptions
+  Apple Music: subscriptions
+  AT&T: utilities
+  AutoZone: auto
+  Best Buy: shopping
+  Chevron: transportation
+  Chewy: pets
+  Chipotle: dining
+  Comcast: utilities
+  Costco: groceries
+  CVS: health
+  Disney+: subscriptions
+  FedEx: shipping
+  Geico: insurance
+  Home Depot: home
+  Hulu: subscriptions
+  IKEA: home
+  Instacart: groceries
+  Interest Charge: fees
+  Jiffy Lube: auto
+  Lyft: transportation
+  Marriott: travel
+  Netflix: subscriptions
+  Overdraft Fee: fees
+  Panera Bread: dining
+  Petco: pets
+  PetSmart: pets
+  Planet Fitness: health
+  Safeway: groceries
+  Shell: transportation
+  Spotify: subscriptions
+  Starbucks: dining
+  State Farm: insurance
+  Steam: entertainment
+  Target: shopping
+  Ticketmaster: entertainment
+  Total Wine: alcohol
+  Trader Joe's: groceries
+  Uber: transportation
+  United Airlines: travel
+  UPS: shipping
+  Verizon: utilities
+  Walgreens: health
+  Walmart: shopping
+  Whole Foods: groceries
+  YouTube Premium: subscriptions
+
+# Reimbursable behavior is household-specific. Add mappings only to the
+# gitignored local rules file.
+reimbursable_merchants: {}

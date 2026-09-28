@@ -1,0 +1,163 @@
+name: Nightly Transaction Sync
+
+on:
+  # Public source is manual-only and defaults to a no-write dispatch. Adding a
+  # schedule alone leaves the job gated off because dispatch inputs are absent.
+  workflow_dispatch:
+    inputs:
+      confirm_database_writes:
+        description: Confirm that this run may migrate and write to the database
+        required: true
+        type: boolean
+        default: false
+      reviewed_commit_sha:
+        description: Exact lowercase 40-character reviewed commit SHA required for writes
+        required: false
+        type: string
+      plaid_environment:
+        description: Plaid environment whose matching secret is configured
+        required: true
+        type: choice
+        options:
+          - sandbox
+          - production
+        default: sandbox
+      auto_categorize:
+        description: Send merchant descriptors to configured categorization providers
+        required: true
+        type: boolean
+        default: false
+      send_telegram_summary:
+        description: Send counts and possible institution/merchant/date/amount details via Telegram
+        required: true
+        type: boolean
+        default: false
+
+concurrency:
+  group: nightly-transaction-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync Transactions
+    if: ${{ inputs.confirm_database_writes == true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Keep public Actions summaries aggregate-only and redact script errors.
+      # Operators must still treat all workflow logs as sensitive.
+      LOG_LEVEL: WARNING
+      LOGURU_LEVEL: WARNING
+
+    steps:
+      - name: Validate reviewed commit input
+        shell: bash
+        env:
+          REVIEWED_COMMIT_SHA: ${{ inputs.reviewed_commit_sha }}
+        run: |
+          if [[ ! "$REVIEWED_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Refusing database writes: reviewed_commit_sha must be an exact lowercase 40-character commit SHA." >&2
+            exit 1
+          fi
+
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.reviewed_commit_sha }}
+
+      - name: Verify checked-out commit
+        shell: bash
+        env:
+          REVIEWED_COMMIT_SHA: ${{ inputs.reviewed_commit_sha }}
+        run: |
+          if [[ "$(git rev-parse HEAD)" != "$REVIEWED_COMMIT_SHA" ]]; then
+            echo "Refusing database writes: checked-out commit does not match the reviewed SHA." >&2
+            exit 1
+          fi
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Run database migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          APP_TOKEN_ENC_KEY: ${{ secrets.APP_TOKEN_ENC_KEY }}
+        run: uv run alembic upgrade head
+
+      - name: Run transaction sync
+        id: sync
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PLAID_ENV: ${{ inputs.plaid_environment }}
+          PLAID_SECRET: ${{ secrets.PLAID_SECRET }}
+          APP_TOKEN_ENC_KEY: ${{ secrets.APP_TOKEN_ENC_KEY }}
+          PLAID_CLIENT_ID: ${{ secrets.PLAID_CLIENT_ID }}
+        run: |
+          set +e
+          uv run budget-me sync --run-type scheduled --json > sync_output.json
+          EXIT_CODE=$?
+          set -e
+
+          if [ -f sync_output.json ]; then
+            echo "tx_added=$(jq -r '.tx_added // 0' sync_output.json)" >> "$GITHUB_OUTPUT"
+            echo "tx_modified=$(jq -r '.tx_modified // 0' sync_output.json)" >> "$GITHUB_OUTPUT"
+            echo "tx_removed=$(jq -r '.tx_removed // 0' sync_output.json)" >> "$GITHUB_OUTPUT"
+            echo "items_ok=$(jq -r '.items_ok // 0' sync_output.json)" >> "$GITHUB_OUTPUT"
+            echo "items_failed=$(jq -r '.items_failed // 0' sync_output.json)" >> "$GITHUB_OUTPUT"
+            echo "status=$(jq -r '.status // "unknown"' sync_output.json)" >> "$GITHUB_OUTPUT"
+          fi
+
+          exit "$EXIT_CODE"
+
+      - name: Auto-categorize transactions
+        id: categorize
+        if: ${{ success() && inputs.auto_categorize == true }}
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          APP_TOKEN_ENC_KEY: ${{ secrets.APP_TOKEN_ENC_KEY }}
+        run: uv run python scripts/auto_categorize.py
+
+      - name: Send Telegram notification
+        if: ${{ always() && inputs.send_telegram_summary == true }}
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          APP_TOKEN_ENC_KEY: ${{ secrets.APP_TOKEN_ENC_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+        run: uv run python scripts/send_telegram_summary.py
+      - name: Remove sensitive temporary output
+        if: always()
+        run: rm -f sync_output.json categorize_output.json
+
+
+      - name: Post non-sensitive sync summary
+        if: always()
+        run: |
+          echo "## Sync Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.sync.outputs.status }}" = "completed" ]; then
+            echo ":white_check_mark: **Status:** Success" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ steps.sync.outputs.status }}" = "partial" ]; then
+            echo ":warning: **Status:** Partial" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo ":x: **Status:** Failed" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Metric | Count |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Added | ${{ steps.sync.outputs.tx_added }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Modified | ${{ steps.sync.outputs.tx_modified }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Removed | ${{ steps.sync.outputs.tx_removed }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Items succeeded | ${{ steps.sync.outputs.items_ok }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Items failed | ${{ steps.sync.outputs.items_failed }} |" >> "$GITHUB_STEP_SUMMARY"

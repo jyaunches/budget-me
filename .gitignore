@@ -1,0 +1,85 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+cover/
+
+# Environments
+.env
+.venv
+venv/
+.env.*
+!.env.example
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.iws
+*.iml
+*.ipr
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+
+# Logs
+logs/
+*.log
+
+# Project-specific
+output/
+data/
+!src/budget_me/data/
+!src/budget_me/data/categorization-rules.yaml
+
+# API keys and secrets
+*.dump
+*.backup
+*.sqlite
+*.sqlite3
+*.db
+
+.env.local
+config/secrets.json
+
+# Claude Code settings (keep commands symlink)
+.claude/settings.local.json
+supabase/.temp/
+
+# Local financial data and generated automation artifacts
+# Legacy imports and private rule exports; runtime rules live in PostgreSQL.
+config/categorization-rules*.yaml
+categorize_output.json
+sync_output.json
+reconciliation-*.json
+reconciliation-*.yaml
+reconciliation-*.yml
+snapshot-reconciliation-*.json
+snapshot-reconciliation-*.yaml
+snapshot-reconciliation-*.yml
+private-runs/
+.playwright-mcp/
+.beads/
+.take-recommendations-output.md
+.codex/
+.streamlit/secrets.toml
