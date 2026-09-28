@@ -1,0 +1,56 @@
+name: Bug report
+description: Report a reproducible problem using synthetic data only
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Budget Me is an experimental, best-effort blueprint. Do not include credentials, database URLs, tokens, account details, real transactions, statements, screenshots, or logs containing household data. Follow the security policy for sensitive vulnerabilities.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Data-safety confirmation
+      options:
+        - label: I used only synthetic examples and removed credentials and household financial data.
+          required: true
+        - label: This can be discussed publicly without disclosing sensitive exploit details.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed and expected behavior with synthetic values.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the smallest safe sequence that reproduces the problem.
+      placeholder: |
+        1. Configure Plaid Sandbox...
+        2. Run...
+        3. Observe...
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Budget Me revision
+      description: Commit SHA or release tag, without configuration values.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Python version, operating system, and relevant provider environments such as Plaid Sandbox. Do not paste environment variables.
+    validations:
+      required: true
+  - type: textarea
+    id: checks
+    attributes:
+      label: Checks performed
+      description: List relevant tests or troubleshooting steps and their redacted results.

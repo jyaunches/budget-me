@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose a focused improvement to the personal-finance blueprint
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep examples synthetic. Do not include credentials, provider identifiers, or household financial data. Budget Me has no maintenance or implementation SLA.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What personal setup or workflow is difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Describe the smallest useful change and any alternatives considered.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Setup and documentation
+        - Streamlit application
+        - Plaid synchronization
+        - Database and Supabase
+        - GitHub Actions
+        - Notifications
+        - Agent workflow
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: implications
+    attributes:
+      label: Security, privacy, and cost implications
+      description: Note any new secrets, permissions, data processors, retained data, database changes, or recurring costs.
+    validations:
+      required: true
