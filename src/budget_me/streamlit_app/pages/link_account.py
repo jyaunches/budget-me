@@ -1,14 +1,22 @@
-"""Streamlit page for linking bank accounts via Plaid Link."""
+"""Streamlit page for adding and repairing Plaid connections."""
 
 import asyncio
+import json
 from collections.abc import Mapping
+from uuid import UUID
 
 import streamlit as st
 from loguru import logger
 
 from budget_me.config import get_settings
 from budget_me.plaid.errors import PlaidError
-from budget_me.plaid.link_flow import create_link_token, exchange_public_token
+from budget_me.plaid.link_flow import (
+    create_item_relink_token,
+    create_link_token,
+    exchange_public_token,
+    list_plaid_items_for_link,
+    verify_item_relink,
+)
 
 
 def _get_session_user_id(user: object) -> str:
@@ -32,256 +40,456 @@ def _exchange_public_token_sync(public_token: str, user_id: str) -> dict:
     return asyncio.run(exchange)
 
 
-def get_plaid_link_html(
-    link_token: str, redirect_uri: str | None, is_oauth_resume: bool = False
+def _list_plaid_items_sync() -> list[dict[str, str | None]]:
+    """Load non-secret connection metadata for the Link page."""
+    return asyncio.run(list_plaid_items_for_link())
+
+
+def _create_item_relink_token_sync(
+    plaid_item_id: str,
+    user_id: str,
+    redirect_uri: str | None,
 ) -> str:
-    """Generate HTML with embedded Plaid Link JavaScript using popup mode.
+    """Create an existing-Item update token from Streamlit."""
+    return asyncio.run(
+        create_item_relink_token(
+            plaid_item_id=UUID(plaid_item_id),
+            user_id=user_id,
+            redirect_uri=redirect_uri,
+        )
+    )
 
-    Uses window.open() to launch Plaid Link in a popup window, avoiding
-    iframe sandboxing issues with Streamlit's st.components.v1.html().
 
-    Args:
-        link_token: Plaid link token for initializing Link
-        redirect_uri: OAuth redirect URI (required for OAuth resume)
-        is_oauth_resume: Whether this is resuming an OAuth flow
+def _verify_item_relink_sync(plaid_item_id: str) -> dict[str, str | None]:
+    """Verify a completed update-mode session from Streamlit."""
+    return asyncio.run(verify_item_relink(UUID(plaid_item_id)))
 
-    Returns:
-        HTML string with embedded Plaid Link script
 
-    Raises:
-        ValueError: If link_token is empty or OAuth resume without redirect_uri
+def _javascript_value(value: str) -> str:
+    """Encode untrusted text for a JavaScript literal inside an HTML script."""
+    return (
+        json.dumps(value)
+        .replace("<", "\\u003c")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
+def get_plaid_link_html(
+    link_token: str,
+    redirect_uri: str | None,
+    is_oauth_resume: bool = False,
+    mode: str = "new",
+) -> str:
+    """Generate a visible, user-initiated Plaid Link launcher.
+
+    Browsers commonly block Link when it is opened automatically from a
+    Streamlit component iframe. This launcher waits for Plaid's onLoad
+    callback, enables a real button inside the iframe, and reports script,
+    initialization, and launch failures instead of spinning indefinitely.
+
+    New connections expose an explicit final navigation after onSuccess so the
+    public token can be exchanged by Streamlit. Update mode does not exchange a
+    public token; the surrounding page verifies the existing Item directly.
     """
     if not link_token or not link_token.strip():
         raise ValueError("link_token cannot be empty")
-
     if is_oauth_resume and not redirect_uri:
         raise ValueError("redirect_uri required for OAuth resume")
+    if mode not in {"new", "relink"}:
+        raise ValueError("mode must be 'new' or 'relink'")
 
-    # Build Plaid Link handler configuration
     oauth_config = ""
     if is_oauth_resume and redirect_uri:
-        oauth_config = f'receivedRedirectUri: "{redirect_uri}",'
+        oauth_config = f"receivedRedirectUri: {_javascript_value(redirect_uri)},"
 
-    # Get the parent window's origin for redirecting after success
-    # We use top.location to get the actual Streamlit app URL
-    html = f"""
+    if mode == "relink":
+        button_label = "Reconnect account"
+        success_handler = """
+                    openButton.hidden = true;
+                    statusEl.className = "success";
+                    statusEl.textContent =
+                        "Reconnection completed. Click Verify Reconnection below.";
+        """
+    else:
+        button_label = "Open Plaid Link"
+        success_handler = """
+                    try {
+                        if (!document.referrer) {
+                            throw new Error("The Streamlit page URL is unavailable.");
+                        }
+                        const callbackUrl = new URL(document.referrer);
+                        callbackUrl.search = "";
+                        callbackUrl.hash = "";
+                        callbackUrl.searchParams.set("public_token", public_token);
+                        callbackUrl.searchParams.set("link_success", "true");
+                        finishLink.href = callbackUrl.toString();
+                        finishLink.hidden = false;
+                        openButton.hidden = true;
+                        statusEl.className = "success";
+                        statusEl.textContent =
+                            "Connection completed. Click Finish Connection to save it.";
+                    } catch (error) {
+                        showError(
+                            "Connection completed, but Budget Me could not build " +
+                            "the return link. Reload the page and try again."
+                        );
+                    }
+        """
+
+    return f"""
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
-        <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
             body {{
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
                 display: flex;
                 flex-direction: column;
                 align-items: center;
                 justify-content: center;
-                height: 100vh;
+                min-height: 220px;
                 margin: 0;
                 background: transparent;
             }}
             #status {{
-                padding: 20px;
+                max-width: 520px;
+                padding: 12px;
                 text-align: center;
-                color: #333;
+                color: #555;
             }}
-            .success {{
-                color: #28a745;
-                font-weight: bold;
+            button, .finish-link {{
+                border: 0;
+                border-radius: 6px;
+                padding: 12px 20px;
+                background: #1677ff;
+                color: white;
+                cursor: pointer;
+                font-size: 16px;
+                font-weight: 600;
+                text-decoration: none;
             }}
-            .error {{
-                color: #dc3545;
+            button:disabled {{
+                background: #9aa4b2;
+                cursor: wait;
             }}
-            .loading {{
-                color: #666;
-            }}
+            .success {{ color: #137333 !important; font-weight: 600; }}
+            .error {{ color: #b3261e !important; font-weight: 600; }}
         </style>
     </head>
     <body>
-        <div id="status" class="loading">Opening Plaid Link...</div>
+        <div id="status">Loading the secure Plaid connection…</div>
+        <button id="open-plaid" disabled>{button_label}</button>
+        <a id="finish-link" class="finish-link" target="_top" hidden>
+            Finish Connection
+        </a>
 
         <script>
-            const statusEl = document.getElementById('status');
+            const linkToken = {_javascript_value(link_token)};
+            const statusEl = document.getElementById("status");
+            const openButton = document.getElementById("open-plaid");
+            const finishLink = document.getElementById("finish-link");
+            let handler = null;
+            let ready = false;
 
-            const handler = Plaid.create({{
-                token: "{link_token}",
-                {oauth_config}
-                onSuccess: function(public_token, metadata) {{
-                    statusEl.className = 'success';
-                    statusEl.innerHTML = 'Connection successful! Redirecting...';
+            function showError(message) {{
+                statusEl.className = "error";
+                statusEl.textContent = message;
+                openButton.disabled = true;
+            }}
 
-                    // Redirect the top-level window (Streamlit app) with the token
-                    const baseUrl = window.top.location.origin + window.top.location.pathname;
-                    window.top.location.href = baseUrl + "?public_token=" + public_token + "&link_success=true";
-                }},
-                onExit: function(err, metadata) {{
-                    if (err) {{
-                        console.error('Plaid Link error:', err);
-                        statusEl.className = 'error';
-                        statusEl.innerHTML = 'Connection cancelled or failed. Please try again.';
-                    }} else {{
-                        statusEl.className = '';
-                        statusEl.innerHTML = 'Connection cancelled. Click "Connect Bank Account" to try again.';
-                    }}
-                }},
-                onLoad: function() {{
-                    statusEl.innerHTML = 'Plaid Link ready. Please complete the connection in the popup.';
-                }},
+            const loadTimeout = window.setTimeout(function() {{
+                if (!ready) {{
+                    showError(
+                        "Plaid Link did not load. Check this browser's content " +
+                        "blocking settings, then reload and try again."
+                    );
+                }}
+            }}, 15000);
+
+            function initializePlaid() {{
+                if (!window.Plaid) {{
+                    showError("The Plaid Link library did not become available.");
+                    return;
+                }}
+
+                try {{
+                    handler = window.Plaid.create({{
+                        token: linkToken,
+                        {oauth_config}
+                        onSuccess: function(public_token, metadata) {{
+                            {success_handler}
+                        }},
+                        onExit: function(err, metadata) {{
+                            if (err) {{
+                                console.error("Plaid Link error", err);
+                                showError(
+                                    "Plaid reported an error. Reload the page and try again."
+                                );
+                                return;
+                            }}
+                            statusEl.className = "";
+                            statusEl.textContent =
+                                "Connection cancelled. You can open Plaid again.";
+                            openButton.disabled = false;
+                        }},
+                        onLoad: function() {{
+                            window.clearTimeout(loadTimeout);
+                            ready = true;
+                            statusEl.className = "";
+                            statusEl.textContent =
+                                "Plaid Link is ready. Continue when you are ready.";
+                            openButton.disabled = false;
+                        }},
+                    }});
+                }} catch (error) {{
+                    console.error("Plaid Link initialization failed", error);
+                    showError(
+                        "Plaid Link could not be initialized. Reload the page and try again."
+                    );
+                }}
+            }}
+
+            function plaidScriptFailed() {{
+                window.clearTimeout(loadTimeout);
+                showError(
+                    "The Plaid Link script could not be downloaded. Check this " +
+                    "browser's content blocking or network settings and try again."
+                );
+            }}
+
+            openButton.addEventListener("click", function() {{
+                if (!ready || !handler) {{
+                    showError("Plaid Link is not ready. Reload the page and try again.");
+                    return;
+                }}
+                openButton.disabled = true;
+                statusEl.className = "";
+                statusEl.textContent = "Opening Plaid Link…";
+                try {{
+                    handler.open();
+                }} catch (error) {{
+                    console.error("Plaid Link launch failed", error);
+                    showError(
+                        "Plaid Link could not be opened. Reload the page and try again."
+                    );
+                }}
             }});
-
-            // Open Plaid Link immediately
-            handler.open();
         </script>
+        <script
+            src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"
+            onload="initializePlaid()"
+            onerror="plaidScriptFailed()"
+        ></script>
     </body>
     </html>
     """
 
-    return html
 
-
-# Main page logic
 st.title("Link Bank Account")
-
 st.write(
-    "Connect your bank account to Budget Me using Plaid Link. "
-    "This will allow you to sync transactions and account balances."
+    "Connect a new institution or repair an existing Plaid connection. "
+    "Credentials are entered only in Plaid Link."
 )
 
-# Get settings for OAuth redirect URI
 settings = get_settings()
-
-# Check for query parameters (OAuth callback or success callback)
 oauth_state_id = st.query_params.get("oauth_state_id")
 public_token = st.query_params.get("public_token")
 link_success = st.query_params.get("link_success")
 
-# Initialize session state for tracking token exchange
 if "token_exchanged" not in st.session_state:
     st.session_state.token_exchanged = False
 
-# Handle public token exchange (success callback)
+flash_message = st.session_state.pop("plaid_link_flash", None)
+if flash_message:
+    st.success(flash_message)
+
 if public_token and link_success == "true" and not st.session_state.token_exchanged:
-    st.info("Exchanging token and saving connection...")
-
+    st.info("Saving the new connection…")
     try:
-        # Get user ID from session state (set by auth middleware)
         user = st.session_state.get("user")
         if not user:
             st.error("Authentication required. Please log in.")
             st.stop()
 
-        user_id = _get_session_user_id(user)
-
-        # Exchange public token for access token
-        result = _exchange_public_token_sync(public_token=public_token, user_id=user_id)
-
+        _exchange_public_token_sync(
+            public_token=public_token,
+            user_id=_get_session_user_id(user),
+        )
         st.session_state.token_exchanged = True
-
-        # Clear query params to prevent re-processing
+        st.session_state.pop("plaid_link_session", None)
         st.query_params.clear()
-
-        st.success(
-            f"Successfully linked bank account! Item ID: {result['plaid_item_id']}"
-        )
-        st.write("Your accounts will appear in the Accounts page after the next sync.")
-
-        if st.button("View Accounts"):
-            st.switch_page("pages/accounts.py")
-
+        st.success("Successfully linked the institution.")
+        st.write("Accounts will appear after the next transaction sync.")
     except PlaidError as e:
-        st.error(f"Failed to link account: {e}")
-        logger.error(f"Token exchange failed: {e}")
+        st.error(f"Failed to save the connection: {e}")
+        logger.error("Plaid token exchange failed")
         st.session_state.token_exchanged = False
-    except Exception as e:
-        st.error(f"Unexpected error: {e}")
-        logger.error(f"Unexpected error during token exchange: {e}")
+    except Exception:
+        st.error("Budget Me could not save the connection. Please try again.")
+        logger.exception("Unexpected Plaid token exchange failure")
         st.session_state.token_exchanged = False
 
-# Handle OAuth resume flow
 elif oauth_state_id:
-    st.info("Resuming OAuth flow...")
-
-    try:
-        # Get user ID from session state
-        user = st.session_state.get("user")
-        if not user:
-            st.error("Authentication required. Please log in.")
-            st.stop()
-
-        user_id = _get_session_user_id(user)
-
-        # Create new link token with receivedRedirectUri
-        # The current URL is the redirect URI
-        current_url = st.query_params.get("oauth_state_id")  # Full URL from OAuth
-        redirect_uri = settings.plaid_redirect_uri
-
-        if not redirect_uri:
-            st.error(
-                "OAuth redirect URI not configured. Set PLAID_REDIRECT_URI environment variable."
-            )
-            st.stop()
-
-        # Create link token for OAuth resume
-        link_token = create_link_token(user_id=user_id, redirect_uri=redirect_uri)
-
-        # Generate HTML with OAuth resume configuration
+    link_session = st.session_state.get("plaid_link_session")
+    if not settings.plaid_redirect_uri:
+        st.error("OAuth cannot resume because PLAID_REDIRECT_URI is not configured.")
+    elif not link_session:
+        st.error("The Plaid session expired. Start the connection again.")
+    else:
+        st.info("Continue the secure connection after returning from your bank.")
         plaid_html = get_plaid_link_html(
-            link_token=link_token, redirect_uri=redirect_uri, is_oauth_resume=True
+            link_token=link_session["link_token"],
+            redirect_uri=settings.plaid_redirect_uri,
+            is_oauth_resume=True,
+            mode=link_session["mode"],
         )
+        st.components.v1.html(plaid_html, height=300, scrolling=False)
 
-        # Embed Plaid Link with auto-open
-        st.components.v1.html(plaid_html, height=600, scrolling=True)
-
-    except PlaidError as e:
-        st.error(f"Failed to resume OAuth flow: {e}")
-        logger.error(f"OAuth resume failed: {e}")
-    except Exception as e:
-        st.error(f"Unexpected error: {e}")
-        logger.error(f"Unexpected error during OAuth resume: {e}")
-
-# Initial state - show Connect button
 else:
-    # Reset token exchange state when returning to initial state
     st.session_state.token_exchanged = False
 
-    st.write("Click the button below to securely connect your bank account.")
+    st.subheader("Repair an existing connection")
+    st.write(
+        "Use update mode for a connection marked as requiring login. "
+        "This keeps the existing accounts and transaction history."
+    )
 
-    if st.button("Connect Bank Account", type="primary", use_container_width=True):
+    if st.button("Check Connection Status", use_container_width=True):
         try:
-            # Get user ID from session state
+            st.session_state["plaid_link_items"] = _list_plaid_items_sync()
+        except Exception:
+            st.error("Budget Me could not load the connection list.")
+            logger.exception("Failed to list Plaid Items for Link page")
+
+    link_items = st.session_state.get("plaid_link_items", [])
+    relink_items = [
+        item for item in link_items if item.get("status") == "relink_required"
+    ]
+
+    if link_items and not relink_items:
+        st.success("No connections currently require reauthentication.")
+
+    for item in relink_items:
+        institution = item.get("institution_name") or "Connected institution"
+        error_code = item.get("last_error_code") or "login required"
+        st.warning(f"{institution}: {error_code}")
+        if st.button(
+            f"Reconnect {institution}",
+            key=f"relink-{item['id']}",
+            use_container_width=True,
+        ):
+            try:
+                user = st.session_state.get("user")
+                if not user:
+                    st.error("Authentication required. Please log in.")
+                    st.stop()
+                token = _create_item_relink_token_sync(
+                    plaid_item_id=item["id"],
+                    user_id=_get_session_user_id(user),
+                    redirect_uri=settings.plaid_redirect_uri,
+                )
+                st.session_state["plaid_link_session"] = {
+                    "mode": "relink",
+                    "item_id": item["id"],
+                    "institution_name": institution,
+                    "link_token": token,
+                }
+            except PlaidError as e:
+                st.error(f"Failed to start reconnection: {e}")
+                logger.error("Failed to create Plaid update-mode token")
+            except Exception:
+                st.error("Budget Me could not start the reconnection.")
+                logger.exception("Unexpected Plaid relink-token failure")
+
+    st.divider()
+    st.subheader("Connect a new institution")
+    st.write("Use this only when the institution is not already connected.")
+
+    if st.button(
+        "Connect New Bank Account",
+        type="primary",
+        use_container_width=True,
+    ):
+        try:
             user = st.session_state.get("user")
             if not user:
                 st.error("Authentication required. Please log in.")
                 st.stop()
-
-            user_id = _get_session_user_id(user)
-
-            # Create link token with optional redirect URI
-            link_token = create_link_token(
-                user_id=user_id, redirect_uri=settings.plaid_redirect_uri
-            )
-
-            # Generate HTML with embedded Plaid Link
-            plaid_html = get_plaid_link_html(
-                link_token=link_token,
+            token = create_link_token(
+                user_id=_get_session_user_id(user),
                 redirect_uri=settings.plaid_redirect_uri,
-                is_oauth_resume=False,
             )
-
-            # Embed Plaid Link with auto-open
-            st.components.v1.html(plaid_html, height=600, scrolling=True)
-
+            st.session_state["plaid_link_session"] = {
+                "mode": "new",
+                "link_token": token,
+            }
         except PlaidError as e:
-            st.error(f"Failed to create link token: {e}")
-            logger.error(f"Link token creation failed: {e}")
-        except Exception as e:
-            st.error(f"Unexpected error: {e}")
-            logger.error(f"Unexpected error during link token creation: {e}")
+            st.error(f"Failed to start Plaid Link: {e}")
+            logger.error("Failed to create Plaid link token")
+        except Exception:
+            st.error("Budget Me could not start Plaid Link.")
+            logger.exception("Unexpected Plaid link-token failure")
 
-# Show existing connections
+    link_session = st.session_state.get("plaid_link_session")
+    if link_session:
+        st.divider()
+        mode = link_session["mode"]
+        title = (
+            f"Reconnect {link_session['institution_name']}"
+            if mode == "relink"
+            else "Connect a new institution"
+        )
+        st.subheader(title)
+        plaid_html = get_plaid_link_html(
+            link_token=link_session["link_token"],
+            redirect_uri=settings.plaid_redirect_uri,
+            mode=mode,
+        )
+        st.components.v1.html(plaid_html, height=300, scrolling=False)
+
+        if mode == "relink":
+            st.caption(
+                "After Plaid reports success, verify the repaired connection here."
+            )
+            if st.button(
+                "Verify Reconnection",
+                type="primary",
+                use_container_width=True,
+            ):
+                try:
+                    result = _verify_item_relink_sync(link_session["item_id"])
+                    institution = (
+                        result.get("institution_name")
+                        or link_session["institution_name"]
+                    )
+                    st.session_state.pop("plaid_link_session", None)
+                    st.session_state.pop("plaid_link_items", None)
+                    st.session_state["plaid_link_flash"] = (
+                        f"{institution} was reconnected and its balances refreshed."
+                    )
+                    st.rerun()
+                except PlaidError as e:
+                    st.error(
+                        "Plaid has not confirmed the reconnection yet. "
+                        f"Complete Link and try Verify again: {e}"
+                    )
+                except Exception:
+                    st.error("Budget Me could not verify the reconnection.")
+                    logger.exception("Unexpected Plaid relink verification failure")
+
+        if st.button("Cancel Link Session", use_container_width=True):
+            st.session_state.pop("plaid_link_session", None)
+            st.rerun()
+
+    if not settings.plaid_redirect_uri:
+        st.caption(
+            "OAuth institutions require an HTTPS PLAID_REDIRECT_URI that is also "
+            "allowed in the Plaid dashboard. Non-OAuth Link flows can still run."
+        )
+
 st.divider()
-st.subheader("Connected Accounts")
-st.write("View your connected accounts on the Accounts page.")
-
 if st.button("Go to Accounts"):
     st.switch_page("pages/accounts.py")

@@ -44,7 +44,7 @@ class TestPlaidLinkHTML:
         assert "onSuccess" in html
         # Verify redirect includes public_token param
         assert "public_token" in html
-        assert "link_success=true" in html
+        assert 'searchParams.set("link_success", "true")' in html
 
     def test_get_plaid_link_html_empty_token_raises_error(self):
         """get_plaid_link_html raises error for empty link token."""

@@ -76,6 +76,118 @@ def create_link_token(user_id: str, redirect_uri: str | None = None) -> str:
         ) from e
 
 
+def create_update_link_token(
+    access_token: str,
+    user_id: str,
+    redirect_uri: str | None = None,
+) -> str:
+    """Create a Plaid Link token that repairs an existing Item.
+
+    Update mode is the required recovery path for ``ITEM_LOGIN_REQUIRED``.
+    Products and product-specific options must be omitted so Plaid repairs the
+    existing authorization instead of creating or expanding an Item.
+    """
+    client = get_plaid_client()
+
+    try:
+        request_kwargs = {
+            "user": LinkTokenCreateRequestUser(client_user_id=user_id),
+            "client_name": "Budget Me",
+            "country_codes": [CountryCode("US")],
+            "language": "en",
+            "access_token": access_token,
+        }
+        if redirect_uri:
+            request_kwargs["redirect_uri"] = redirect_uri
+
+        response = client.link_token_create(LinkTokenCreateRequest(**request_kwargs))
+        return response.link_token
+    except ApiException as e:
+        raise PlaidError(
+            message=f"Failed to create update-mode link token: {e.reason}",
+            status=e.status,
+        ) from e
+
+
+async def list_plaid_items_for_link() -> list[dict[str, str | None]]:
+    """Return non-secret Plaid Item metadata for the Link Account page."""
+    async with get_async_session() as session:
+        items = await ItemsRepo(session).get_all()
+
+    return [
+        {
+            "id": str(item.id),
+            "institution_name": item.institution_name or item.institution_id,
+            "status": item.status.value,
+            "last_error_code": item.last_error_code,
+        }
+        for item in sorted(
+            items,
+            key=lambda value: (
+                value.institution_name or value.institution_id or "",
+                str(value.id),
+            ),
+        )
+    ]
+
+
+async def create_item_relink_token(
+    plaid_item_id: uuid.UUID,
+    user_id: str,
+    redirect_uri: str | None = None,
+) -> str:
+    """Create an update-mode Link token for a stored Plaid Item."""
+    settings = get_settings()
+    encryptor = TokenEncryption(settings.app_token_enc_key)
+
+    async with get_async_session() as session:
+        item = await ItemsRepo(session).get_by_id(plaid_item_id)
+        if item is None:
+            raise ValueError(f"Item {plaid_item_id} not found")
+        access_token = encryptor.decrypt(item.access_token_enc)
+
+    return create_update_link_token(
+        access_token=access_token,
+        user_id=user_id,
+        redirect_uri=redirect_uri,
+    )
+
+
+async def verify_item_relink(plaid_item_id: uuid.UUID) -> dict[str, str | None]:
+    """Verify repaired provider access and reactivate the existing Item.
+
+    The browser callback alone is not trusted. A successful ``/item/get`` call
+    proves that Plaid accepted the update-mode flow before local status and
+    account balances are refreshed.
+    """
+    client = get_plaid_client()
+    settings = get_settings()
+    encryptor = TokenEncryption(settings.app_token_enc_key)
+
+    try:
+        async with get_async_session() as session:
+            items_repo = ItemsRepo(session)
+            item = await items_repo.get_by_id(plaid_item_id)
+            if item is None:
+                raise ValueError(f"Item {plaid_item_id} not found")
+
+            access_token = encryptor.decrypt(item.access_token_enc)
+            client.item_get(ItemGetRequest(access_token=access_token))
+            await _fetch_and_store_accounts(access_token, plaid_item_id, session)
+            await items_repo.update_status(plaid_item_id, PlaidItemStatus.ACTIVE)
+
+            return {
+                "id": str(item.id),
+                "institution_name": item.institution_name or item.institution_id,
+                "status": PlaidItemStatus.ACTIVE.value,
+            }
+    except ApiException as e:
+        raise PlaidError(
+            message=f"Plaid has not confirmed the repaired connection: {e.reason}",
+            status=e.status,
+        ) from e
+
+
 def create_liabilities_upgrade_token(
     access_token: str, redirect_uri: str | None = None
 ) -> str:
