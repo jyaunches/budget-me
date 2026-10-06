@@ -1,5 +1,7 @@
 """Reliability coverage for the embedded Plaid Link launcher."""
 
+import asyncio
+
 
 def test_launcher_waits_for_an_explicit_browser_click():
     from budget_me.streamlit_app.pages.link_account import get_plaid_link_html
@@ -68,3 +70,49 @@ def test_javascript_values_are_escaped():
 
     assert "</script><script>alert" not in html
     assert "\\u003c/script>" in html
+
+
+def test_sequential_actions_do_not_reuse_an_event_loop_pool(monkeypatch):
+    from budget_me.streamlit_app.pages import link_account
+
+    engine_loops = []
+
+    class FakeEngine:
+        async def use(self):
+            current_loop = asyncio.get_running_loop()
+            if engine_loops and engine_loops[-1] is not current_loop:
+                raise RuntimeError("database pool reused across event loops")
+            if not engine_loops:
+                engine_loops.append(current_loop)
+
+        async def dispose(self):
+            engine_loops.clear()
+
+    class FakeGetEngine:
+        def __init__(self):
+            self.engine = FakeEngine()
+            self.cached = False
+
+        def __call__(self):
+            self.cached = True
+            return self.engine
+
+        def cache_clear(self):
+            self.engine = FakeEngine()
+            self.cached = False
+
+        def cache_info(self):
+            class CacheInfo:
+                currsize = int(self.cached)
+
+            return CacheInfo()
+
+    fake_get_engine = FakeGetEngine()
+    monkeypatch.setattr(link_account, "get_engine", fake_get_engine)
+
+    async def use_database():
+        await fake_get_engine().use()
+        return "ok"
+
+    assert link_account._run_async(use_database()) == "ok"
+    assert link_account._run_async(use_database()) == "ok"

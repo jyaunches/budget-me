@@ -9,6 +9,7 @@ import streamlit as st
 from loguru import logger
 
 from budget_me.config import get_settings
+from budget_me.db.engine import get_engine
 from budget_me.plaid.errors import PlaidError
 from budget_me.plaid.link_flow import (
     create_item_relink_token,
@@ -34,15 +35,33 @@ def _get_session_user_id(user: object) -> str:
     raise ValueError("Authenticated user has no stable identifier")
 
 
+async def _await_with_fresh_engine(coroutine):
+    """Await one Streamlit action and release its loop-bound DB connections."""
+    try:
+        return await coroutine
+    finally:
+        if get_engine.cache_info().currsize:
+            try:
+                await get_engine().dispose()
+            finally:
+                get_engine.cache_clear()
+
+
+def _run_async(coroutine):
+    """Bridge a Streamlit action to asyncio without reusing another loop's pool."""
+    get_engine.cache_clear()
+    return asyncio.run(_await_with_fresh_engine(coroutine))
+
+
 def _exchange_public_token_sync(public_token: str, user_id: str) -> dict:
     """Run Plaid's async token exchange from Streamlit's synchronous script."""
     exchange = exchange_public_token(public_token=public_token, user_id=user_id)
-    return asyncio.run(exchange)
+    return _run_async(exchange)
 
 
 def _list_plaid_items_sync() -> list[dict[str, str | None]]:
     """Load non-secret connection metadata for the Link page."""
-    return asyncio.run(list_plaid_items_for_link())
+    return _run_async(list_plaid_items_for_link())
 
 
 def _create_item_relink_token_sync(
@@ -51,7 +70,7 @@ def _create_item_relink_token_sync(
     redirect_uri: str | None,
 ) -> str:
     """Create an existing-Item update token from Streamlit."""
-    return asyncio.run(
+    return _run_async(
         create_item_relink_token(
             plaid_item_id=UUID(plaid_item_id),
             user_id=user_id,
@@ -62,7 +81,7 @@ def _create_item_relink_token_sync(
 
 def _verify_item_relink_sync(plaid_item_id: str) -> dict[str, str | None]:
     """Verify a completed update-mode session from Streamlit."""
-    return asyncio.run(verify_item_relink(UUID(plaid_item_id)))
+    return _run_async(verify_item_relink(UUID(plaid_item_id)))
 
 
 def _javascript_value(value: str) -> str:
