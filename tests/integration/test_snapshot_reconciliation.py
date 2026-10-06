@@ -33,6 +33,7 @@ from budget_me.snapshots.reconciliation_manifest import (
     ReconciliationManifest,
     TransactionDecision,
 )
+from budget_me.snapshots.reporting import get_reconciled_actual_report
 from budget_me.snapshots.service import build_close_preview, close_snapshot
 from budget_me.streamlit_app.db import get_sync_engine
 from tests.integration.snapshot_reconciliation_helpers import (
@@ -195,6 +196,18 @@ def test_reconciliation_receipt_is_required_and_allows_exact_close(
         assert evidence.is_valid is True
         assert evidence.totals is not None
         assert evidence.totals.expense_total == Decimal("50.00")
+        session.rollback()
+
+        report = get_reconciled_actual_report(session, "2025-12", checking_id)
+        assert report is not None
+        assert report.totals.expense_total == Decimal("50.00")
+        assert len(report.rows_for("expense")) == 1
+        detail = report.rows_for("expense")[0]
+        assert detail.description == "Synthetic reviewed purchase"
+        assert detail.category == "groceries"
+        assert detail.amount == Decimal("50.00")
+        assert detail.plan_matches[0].name == "Synthetic planned expense"
+        assert detail.plan_matches[0].amount == Decimal("50.00")
         session.rollback()
 
         close_preview = build_close_preview(

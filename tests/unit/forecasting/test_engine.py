@@ -94,6 +94,21 @@ def test_get_item_months_quarterly():
     assert len(months) == 4
 
 
+def test_get_item_months_quarterly_uses_start_month_as_cadence_anchor():
+    """Quarterly items can follow a non-calendar-quarter billing cadence."""
+    item = MockItem(
+        name="Quarterly Water",
+        amount=Decimal("359.00"),
+        item_type="expense",
+        frequency="quarterly",
+        start_month="2026-06",
+    )
+
+    months = get_item_months_in_range(item, "2026-01", "2027-05")
+
+    assert months == ["2026-06", "2026-09", "2026-12", "2027-03"]
+
+
 def test_get_item_months_one_time():
     """Test one-time item appears only once."""
     item = MockItem(

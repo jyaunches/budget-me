@@ -326,7 +326,7 @@ def test_unsynced_open_snapshot_uses_planned_children_and_zero_reimbursements() 
 
 
 def test_reconciled_open_snapshot_uses_complete_cached_actual_header() -> None:
-    """A receipt timestamp switches every reported flow to coherent actuals."""
+    """A valid receipt switches every reported flow to coherent actuals."""
     snapshot = _closed_snapshot(
         status=SnapshotStatus.OPEN,
         starting_balance=Decimal("1000.00"),
@@ -339,7 +339,11 @@ def test_reconciled_open_snapshot_uses_complete_cached_actual_header() -> None:
         AssertionError("reconciled open report queried mutable planned children"),
     ]
 
-    totals = db.calculate_snapshot_totals(session, "2025-12", "checking-1")
+    with patch(
+        "budget_me.snapshots.reconciliation.validate_current_reconciliation",
+        return_value=SimpleNamespace(is_valid=True),
+    ):
+        totals = db.calculate_snapshot_totals(session, "2025-12", "checking-1")
 
     assert totals == {
         "income_total": 100.0,
@@ -356,7 +360,7 @@ def test_reconciled_open_snapshot_uses_complete_cached_actual_header() -> None:
 
 
 def test_reconciled_open_snapshot_requires_coherent_cached_actual_header() -> None:
-    """A timestamp cannot bless missing or contradictory cached actuals."""
+    """A valid receipt cannot bless missing or contradictory cached actuals."""
     for snapshot in (
         _closed_snapshot(
             status=SnapshotStatus.OPEN,
@@ -374,8 +378,44 @@ def test_reconciled_open_snapshot_requires_coherent_cached_actual_header() -> No
         session = MagicMock()
         session.execute.return_value = _scalar_result(snapshot)
 
-        with pytest.raises(ValueError, match="complete, coherent cached header"):
+        with (
+            patch(
+                "budget_me.snapshots.reconciliation.validate_current_reconciliation",
+                return_value=SimpleNamespace(is_valid=True),
+            ),
+            pytest.raises(ValueError, match="complete, coherent cached header"),
+        ):
             db.calculate_snapshot_totals(session, "2025-12", "checking-1")
+
+
+def test_legacy_reconciliation_timestamp_without_receipt_uses_plan() -> None:
+    """A pre-ledger timestamp cannot turn a migrated plan cache into actuals."""
+    snapshot = _closed_snapshot(
+        status=SnapshotStatus.OPEN,
+        starting_balance=Decimal("1000.00"),
+        closing_balance_frozen=False,
+        last_synced_at=datetime(2026, 7, 22, tzinfo=UTC),
+    )
+    items = [
+        SimpleNamespace(item_type="income", amount=Decimal("80.00")),
+        SimpleNamespace(item_type="expense", amount=Decimal("25.00")),
+    ]
+    cards = [SimpleNamespace(calculated_payment=Decimal("10.00"))]
+    session = MagicMock()
+    session.execute.side_effect = [
+        _scalar_result(snapshot),
+        _scalars_result(items),
+        _scalars_result(cards),
+    ]
+
+    with patch(
+        "budget_me.snapshots.reconciliation.validate_current_reconciliation",
+        return_value=SimpleNamespace(is_valid=False),
+    ):
+        totals = db.calculate_snapshot_totals(session, "2025-12", "checking-1")
+
+    assert totals["net"] == 45.0
+    assert totals["closing_balance"] == 1045.0
 
 
 def test_existing_snapshot_read_shape_includes_reimbursement_cache() -> None:

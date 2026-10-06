@@ -115,11 +115,22 @@ def get_item_months_in_range(item: Any, start: str, end: str) -> list[str]:
                 months.append(month)
 
     elif frequency == "quarterly":
-        # Appears in Jan, Apr, Jul, Oct (months 1, 4, 7, 10)
+        # Anchor the three-month cadence to start_month when one is supplied.
+        # Without an explicit anchor, preserve the historical Jan/Apr/Jul/Oct
+        # schedule.
+        anchor = getattr(item, "start_month", None)
+        anchor_year = anchor_month = None
+        if anchor:
+            anchor_year, anchor_month = parse_year_month(anchor)
         for month in all_months:
             if is_item_active_in_month(item, month):
-                _, m = parse_year_month(month)
-                if m in [1, 4, 7, 10]:
+                year, month_number = parse_year_month(month)
+                if anchor_year is None or anchor_month is None:
+                    occurs = month_number in [1, 4, 7, 10]
+                else:
+                    offset = (year - anchor_year) * 12 + (month_number - anchor_month)
+                    occurs = offset >= 0 and offset % 3 == 0
+                if occurs:
                     months.append(month)
 
     elif frequency == "annual":

@@ -611,6 +611,57 @@ def test_preview_blocks_stale_pending_and_null_balance():
     assert preview.can_close is False
 
 
+def test_missing_receipt_does_not_treat_legacy_timestamp_as_reconciliation():
+    """A migrated timestamp must not produce derivative receipt warnings."""
+    legacy_time = datetime(2026, 7, 22, tzinfo=UTC)
+    snapshot = _snapshot(last_synced_at=legacy_time)
+    transaction = Transaction(
+        id=uuid4(),
+        plaid_transaction_id="posted-after-legacy-sync",
+        plaid_item_id=PAYING_PLAID_ITEM_ID,
+        account_id="checking-1",
+        date=date(2026, 7, 31),
+        amount=Decimal("10.00"),
+        name="Reviewed",
+        pending=False,
+        reviewed=True,
+        budget_category="income",
+        created_at=NOW - timedelta(days=1),
+        updated_at=NOW - timedelta(days=1),
+    )
+    evidence = service.CurrentReconciliationEvidence(
+        run_id=None,
+        reconciled_at=None,
+        manifest_hash=None,
+        input_hash="a" * 64,
+        totals=None,
+        blockers=("No current immutable reconciliation receipt exists.",),
+    )
+
+    preview = service._calculate_preview(
+        snapshot=snapshot,
+        account=_account(),
+        items=[],
+        cards=[],
+        credit_card_accounts=[],
+        transactions=[transaction],
+        missing_paying_cards=[],
+        next_snapshot=None,
+        starting_balance=Decimal("100.00"),
+        captured_balance=Decimal("100.00"),
+        now=NOW,
+        max_reconciliation_age=timedelta(hours=24),
+        reconciliation_evidence=evidence,
+    )
+
+    assert "No current immutable reconciliation receipt exists." in preview.blockers
+    assert not any("stale" in blocker for blocker in preview.blockers)
+    assert not any(
+        "before the calendar month ended" in blocker for blocker in preview.blockers
+    )
+    assert not any("Transactions changed" in blocker for blocker in preview.blockers)
+
+
 def test_preview_blocks_pre_month_end_review_missing_actuals_and_capture_delta():
     """Historical close requires a complete post-month reconciliation."""
     snapshot = _snapshot(last_synced_at=datetime(2026, 7, 30, tzinfo=UTC))

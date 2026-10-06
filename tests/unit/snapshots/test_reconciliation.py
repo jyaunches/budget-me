@@ -606,6 +606,41 @@ def test_fulfilled_line_item_requires_a_real_match_and_allows_plan_variance() ->
     )
 
 
+def test_reimbursable_outflow_can_fulfill_planned_expense() -> None:
+    """A reimbursable checking debit still satisfies its planned expense."""
+    snapshot = _snapshot()
+    transaction = _transaction("50.90", "utilities", reimbursable=True)
+    item = _line_item(snapshot.id, "50.90")
+    inputs = _inputs(
+        snapshot=snapshot,
+        transactions=(transaction,),
+        line_items=(item,),
+    )
+    manifest = _manifest(
+        [_decision(transaction, "reimbursement_out", "50.90")],
+        [
+            LineItemDecision(
+                line_item_id=item.id,
+                resolution="fulfilled",
+                remaining_amount="0.00",
+                matches=[
+                    LineItemMatch(
+                        transaction_id=transaction.id,
+                        allocation_index=0,
+                        amount="50.90",
+                    )
+                ],
+            )
+        ],
+    )
+
+    preview = reconciliation._prepare_preview(inputs, manifest)
+
+    assert preview.blockers == ()
+    assert preview.totals.expense_total == Decimal("0.00")
+    assert preview.totals.reimbursement_out_total == Decimal("50.90")
+
+
 def test_remaining_line_item_balances_matches_and_reports_remaining_amount() -> None:
     snapshot = _snapshot()
     transaction = _transaction("60.00", "groceries")

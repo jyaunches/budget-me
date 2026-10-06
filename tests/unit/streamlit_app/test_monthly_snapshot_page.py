@@ -338,6 +338,38 @@ def test_reconciled_snapshot_hides_plan_comparison_in_history():
     assert "Card Payments" in overview_source
 
 
+def test_reconciled_snapshot_renders_receipt_backed_actual_details():
+    """The snapshot page should expose every reconciled cash-flow section."""
+    from budget_me.streamlit_app.pages import monthly_snapshot
+
+    page_source = inspect.getsource(monthly_snapshot)
+    detail_source = inspect.getsource(monthly_snapshot.render_reconciled_actual_details)
+    row_source = inspect.getsource(monthly_snapshot._render_actual_rows)
+
+    assert "get_reconciled_actual_details" in page_source
+    assert "Reconciled Actual Details" in detail_source
+    for label in (
+        "Income",
+        "Expenses",
+        "Transfers In",
+        "Transfers Out",
+        "Reimbursements In",
+        "Reimbursements Out",
+        "Card Payments",
+    ):
+        assert label in detail_source
+    for column in (
+        "Date",
+        "Description",
+        "Posted Account",
+        "Category",
+        "Matched Plan",
+        "Amount",
+        "Note",
+    ):
+        assert column in row_source
+
+
 class TestSnapshotWorkflowUIUpdates:
     """Test Phase 4: UI Updates for Snapshot Workflow."""
 

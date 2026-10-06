@@ -14,6 +14,7 @@ from budget_me.streamlit_app.db import (
     get_closing_balance,
     get_depository_accounts,
     get_or_create_snapshot,
+    get_reconciled_actual_details,
     get_session,
     get_snapshot_credit_cards,
     get_snapshot_line_items,
@@ -250,6 +251,77 @@ def render_overview_metrics(totals: dict, reconciliation_complete: bool = False)
     """,
         unsafe_allow_html=True,
     )
+
+
+def _render_actual_rows(rows: list[dict]) -> None:
+    """Render immutable receipt allocations as a compact read-only table."""
+    if not rows:
+        st.caption("No actual allocations in this section.")
+        return
+
+    display_rows = []
+    for row in rows:
+        matched_plan = "; ".join(
+            f"{match['name']} (${match['amount']:,.2f})"
+            for match in row["matched_plan"]
+        )
+        row_date = row["date"]
+        display_rows.append(
+            {
+                "Date": row_date.isoformat() if row_date is not None else "Adjustment",
+                "Description": row["description"],
+                "Posted Account": row["account"],
+                "Category": row["category"] or "—",
+                "Matched Plan": matched_plan or "—",
+                "Amount": row["amount"],
+                "Note": row["note"] or "—",
+            }
+        )
+
+    st.dataframe(
+        display_rows,
+        column_config={
+            "Amount": st.column_config.NumberColumn(format="$%.2f"),
+        },
+        hide_index=True,
+        width="stretch",
+    )
+
+
+def _render_actual_flow(details: dict, flow_type: str, label: str) -> None:
+    """Render one receipt flow with a count and an exact subtotal."""
+    rows = [row for row in details["rows"] if row["flow_type"] == flow_type]
+    total = details["totals"][flow_type]
+    st.markdown(f"**{label}: ${total:,.2f}** · {len(rows)} allocation(s)")
+    _render_actual_rows(rows)
+
+
+def render_reconciled_actual_details(details: dict | None) -> None:
+    """Render transaction-level detail from an immutable reconciliation receipt."""
+    st.header("Reconciled Actual Details")
+    if details is None:
+        st.info("Detailed reconciliation receipt unavailable for this legacy snapshot.")
+        return
+
+    st.caption(
+        "Exact receipt allocations. Categories and matched planning items reflect "
+        "the reviewed reconciliation, not inferred Plaid labels."
+    )
+    income_tab, expense_tab, transfers_tab, reimbursements_tab, cards_tab = st.tabs(
+        ["Income", "Expenses", "Transfers", "Reimbursements", "Card Payments"]
+    )
+    with income_tab:
+        _render_actual_flow(details, "income", "Income")
+    with expense_tab:
+        _render_actual_flow(details, "expense", "Expenses")
+    with transfers_tab:
+        _render_actual_flow(details, "transfer_in", "Transfers In")
+        _render_actual_flow(details, "transfer_out", "Transfers Out")
+    with reimbursements_tab:
+        _render_actual_flow(details, "reimbursement_in", "Reimbursements In")
+        _render_actual_flow(details, "reimbursement_out", "Reimbursements Out")
+    with cards_tab:
+        _render_actual_flow(details, "card_payment", "Card Payments")
 
 
 def render_income_section(
@@ -987,6 +1059,11 @@ with get_session() as session:
 
 # Overview section - compact
 render_overview_metrics(totals, reconciliation_complete=reconciliation_complete)
+
+if reconciliation_complete:
+    with get_session() as session:
+        actual_details = get_reconciled_actual_details(session, year_month, account_id)
+    render_reconciled_actual_details(actual_details)
 
 
 def render_planning_history(display_status: str) -> None:

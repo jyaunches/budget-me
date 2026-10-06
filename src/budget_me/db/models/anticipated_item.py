@@ -24,7 +24,7 @@ class ItemFrequency(str, enum.Enum):
     """Frequency of anticipated item occurrence."""
 
     MONTHLY = "monthly"
-    QUARTERLY = "quarterly"  # Jan, Apr, Jul, Oct
+    QUARTERLY = "quarterly"  # Every 3 months from start_month; Jan if unset
     ANNUAL = "annual"  # Specified month only
     ONE_TIME = "one_time"  # Single occurrence in start_month
 

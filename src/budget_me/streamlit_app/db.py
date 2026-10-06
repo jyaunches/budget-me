@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import create_engine, func, select, update
+from sqlalchemy import create_engine, func, or_, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -2152,10 +2152,11 @@ def calculate_snapshot_totals(
 ) -> dict:
     """Return authoritative totals for one account's monthly snapshot.
 
-    Closed snapshots use only their cached header. A timestamped open snapshot
-    also uses its complete, coherent cached actual header. Only an unsynced open
-    snapshot remains a live projection calculated from non-skipped line items
-    and planned card payments, with reimbursement flows held at zero.
+    Closed snapshots use only their cached header. An open snapshot uses its
+    cached actual header only when a current immutable reconciliation receipt
+    validates it. Legacy timestamps without receipts remain plan projections
+    calculated from non-skipped line items and planned card payments, with
+    reimbursement flows held at zero.
 
     Args:
         session: Database session
@@ -2187,7 +2188,21 @@ def calculate_snapshot_totals(
             )
         return {field: float(value) for field, value in totals.items()}
 
+    current_receipt = None
     if snapshot.last_synced_at is not None:
+        # last_synced_at predates immutable reconciliation receipts. Private
+        # instances migrated from the legacy app can therefore have a timestamp
+        # alongside cached planning totals. Only the receipt can establish that
+        # an open snapshot header contains authoritative actuals.
+        from budget_me.snapshots.reconciliation import (
+            validate_current_reconciliation,
+        )
+
+        current_receipt = validate_current_reconciliation(
+            session, year_month, account_id
+        )
+
+    if current_receipt is not None and current_receipt.is_valid:
         cached = _coherent_snapshot_header(snapshot)
         if cached is None:
             raise ValueError(
@@ -2261,6 +2276,54 @@ def calculate_snapshot_totals(
         "credit_card_total": float(credit_card_total),
         "net": float(net),
         "closing_balance": float((snapshot.starting_balance or Decimal("0.00")) + net),
+    }
+
+
+def get_reconciled_actual_details(
+    session: Session, year_month: str, account_id: str
+) -> dict | None:
+    """Return display-ready detail from the current immutable receipt."""
+    from budget_me.snapshots.reporting import get_reconciled_actual_report
+
+    report = get_reconciled_actual_report(session, year_month, account_id)
+    if report is None:
+        return None
+
+    totals = report.totals
+    return {
+        "run_id": str(report.run_id),
+        "version": report.version,
+        "reconciled_at": report.reconciled_at,
+        "totals": {
+            "income": float(totals.income_total),
+            "expense": float(totals.expense_total),
+            "transfer_in": float(totals.transfer_in_total),
+            "transfer_out": float(totals.transfer_out_total),
+            "reimbursement_in": float(totals.reimbursement_in_total),
+            "reimbursement_out": float(totals.reimbursement_out_total),
+            "card_payment": float(totals.credit_card_total),
+        },
+        "rows": [
+            {
+                "flow_type": row.flow_type,
+                "amount": float(row.amount),
+                "category": row.category,
+                "date": row.transaction_date,
+                "description": row.description,
+                "account": row.account_name,
+                "source_kind": row.source_kind,
+                "transaction_id": (
+                    str(row.transaction_id) if row.transaction_id is not None else None
+                ),
+                "allocation_index": row.allocation_index,
+                "matched_plan": [
+                    {"name": match.name, "amount": float(match.amount)}
+                    for match in row.plan_matches
+                ],
+                "note": row.note,
+            }
+            for row in report.rows
+        ],
     }
 
 
@@ -2977,7 +3040,11 @@ def get_historical_cc_average(session: Session, months: int = 3) -> Decimal | No
 
 
 def get_anticipated_items_for_forecast(session: Session) -> list[dict]:
-    """Get all active anticipated items with extended fields.
+    """Get active cash-flow items, excluding expenses routed to credit cards.
+
+    Credit-card-routed recurring items are useful merchant expectations, but
+    their cash impact is already represented by the projected card payment.
+    Including both would double count the same expense in checking forecasts.
 
     Returns items with: id, name, amount, item_type, category,
                        frequency, start_month, end_month, account_id
@@ -2988,7 +3055,11 @@ def get_anticipated_items_for_forecast(session: Session) -> list[dict]:
 
     result = session.execute(
         select(AnticipatedItem)
-        .where(AnticipatedItem.active.is_(True))
+        .outerjoin(Account, Account.account_id == AnticipatedItem.account_id)
+        .where(
+            AnticipatedItem.active.is_(True),
+            or_(AnticipatedItem.account_id.is_(None), Account.type != "credit"),
+        )
         .order_by(AnticipatedItem.name)
     )
     items = result.scalars().all()

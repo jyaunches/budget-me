@@ -43,6 +43,15 @@ def test_calculate_plan_vs_actual_expands_anticipated_items():
     assert "get_anticipated_items_for_forecast" in source
 
 
+def test_forecast_items_exclude_credit_card_routed_recurring_items():
+    """Card-routed merchant expectations must not duplicate card payments."""
+    from budget_me.streamlit_app.db import get_anticipated_items_for_forecast
+
+    source = inspect.getsource(get_anticipated_items_for_forecast)
+
+    assert 'Account.type != "credit"' in source
+
+
 def test_calculate_plan_vs_actual_queries_snapshots():
     """Verify function queries MonthlySnapshot for status."""
     from budget_me.streamlit_app.db import calculate_plan_vs_actual

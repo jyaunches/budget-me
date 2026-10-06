@@ -894,13 +894,18 @@ def _calculate_preview(
                 "Latest Plaid parent run for relevant item "
                 f"{evidence.plaid_item_id} has no completion timestamp."
             )
+    # last_synced_at is a legacy marker that predates immutable receipts.
+    # Once receipt evidence is available, never use that marker as proof of a
+    # modern reconciliation: migrated plan caches may otherwise appear to be
+    # stale actuals and generate a cascade of misleading derivative blockers.
     reconciliation_time = (
-        reconciliation_evidence.reconciled_at or snapshot.last_synced_at
+        reconciliation_evidence.reconciled_at
         if reconciliation_evidence is not None
         else snapshot.last_synced_at
     )
     if reconciliation_time is None:
-        blockers.append("Snapshot has not been reconciled with transactions.")
+        if reconciliation_evidence is None:
+            blockers.append("Snapshot has not been reconciled with transactions.")
     else:
         synced_at = _as_utc(reconciliation_time)
         if now - synced_at > max_reconciliation_age:

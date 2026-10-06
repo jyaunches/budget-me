@@ -109,6 +109,18 @@ def _is_card_payment(transaction: Transaction) -> bool:
     )
 
 
+def _line_flow_is_compatible(item_type: str, allocation_flow_type: str) -> bool:
+    """Return whether an actual allocation can fulfill a planned cash-flow item.
+
+    A reimbursable outflow is still the expected expense leaving checking; its
+    separate flow type only preserves reimbursement reporting and must not force
+    the planned expense to be marked skipped.
+    """
+    return allocation_flow_type == item_type or (
+        item_type == "expense" and allocation_flow_type == "reimbursement_out"
+    )
+
+
 def _sha256(payload: Any) -> str:
     encoded = json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
@@ -676,7 +688,7 @@ def _prepare_preview(
             if allocation is None:
                 blockers.append("A line-item match references a missing allocation.")
                 continue
-            if allocation.flow_type != item.item_type:
+            if not _line_flow_is_compatible(item.item_type, allocation.flow_type):
                 blockers.append(
                     "A line-item match uses an incompatible cash-flow type."
                 )
