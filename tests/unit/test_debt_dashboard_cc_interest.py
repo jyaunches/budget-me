@@ -1,5 +1,6 @@
 """Unit tests for Debt Dashboard - Credit Card Interest Queries (Phase 2)."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -25,6 +26,7 @@ class TestGetCCCalculatedInterest:
                 mask="0001",
                 balance_current=Decimal("1500.00"),
                 payment_strategy="pay_in_full",
+                balance_updated_at=datetime(2026, 10, 5, tzinfo=UTC),
                 # APRs would exist but aren't used for calculation
             ),
         ]
@@ -54,6 +56,7 @@ class TestGetCCCalculatedInterest:
                 mask="0002",
                 balance_current=Decimal("15000.00"),
                 payment_strategy="promotional_paydown",
+                balance_updated_at=datetime(2026, 10, 5, tzinfo=UTC),
             ),
         ]
         mock_account_result.fetchall.return_value = mock_account_rows
@@ -83,6 +86,7 @@ class TestGetCCCalculatedInterest:
         assert len(cards) == 1
         assert cards[0]["calculated_interest"] == 75.00
         assert cards[0]["account_name"] == "Example Card B"
+        assert cards[0]["allocation_reconciled"] is True
 
     def test_get_cc_calculated_interest_multiple_positive_aprs(self):
         """Correctly sums interest from multiple positive APR rates."""
@@ -98,6 +102,7 @@ class TestGetCCCalculatedInterest:
                 mask="0003",
                 balance_current=Decimal("5000.00"),
                 payment_strategy="promotional_paydown",
+                balance_updated_at=datetime(2026, 10, 5, tzinfo=UTC),
             ),
         ]
         mock_account_result.fetchall.return_value = mock_account_rows
@@ -139,6 +144,7 @@ class TestGetCCCalculatedInterest:
                 mask="0004",
                 balance_current=Decimal("1000.00"),
                 payment_strategy="promotional_paydown",
+                balance_updated_at=datetime(2026, 10, 5, tzinfo=UTC),
             )
         ]
 
@@ -155,7 +161,43 @@ class TestGetCCCalculatedInterest:
         cards = get_cc_calculated_interest(mock_session)
 
         assert len(cards) == 1
-        assert cards[0]["calculated_interest"] == 0.0
+        assert cards[0]["calculated_interest"] is None
+        assert cards[0]["allocation_reconciled"] is False
+
+    def test_get_cc_calculated_interest_withholds_stale_apr_allocation(self):
+        """Interest is not presented as exact when APR buckets exceed the balance."""
+        mock_session = Mock()
+
+        mock_account_result = Mock()
+        mock_account_result.fetchall.return_value = [
+            Mock(
+                account_id="stale_promo_card",
+                account_name="Stale Promo Card",
+                mask="0005",
+                balance_current=Decimal("1000.00"),
+                payment_strategy="promotional_paydown",
+                balance_updated_at=datetime(2026, 10, 5, tzinfo=UTC),
+            )
+        ]
+        mock_apr_result = Mock()
+        mock_apr_result.fetchall.return_value = [
+            Mock(
+                apr_percentage=Decimal("0.00"),
+                balance_subject_to_apr=Decimal("1200.00"),
+            ),
+            Mock(
+                apr_percentage=Decimal("18.00"),
+                balance_subject_to_apr=Decimal("300.00"),
+            ),
+        ]
+        mock_session.execute.side_effect = [mock_account_result, mock_apr_result]
+
+        cards = get_cc_calculated_interest(mock_session)
+
+        assert cards[0]["apr_balance_total"] == 1500.0
+        assert cards[0]["allocation_difference"] == -500.0
+        assert cards[0]["allocation_reconciled"] is False
+        assert cards[0]["calculated_interest"] is None
 
 
 class TestGetCCInterestFromTransactions:

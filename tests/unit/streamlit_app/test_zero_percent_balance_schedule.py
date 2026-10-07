@@ -12,6 +12,7 @@ def test_zero_percent_schedule_returns_each_promotional_balance():
     result = Mock()
     result.fetchall.return_value = [
         Mock(
+            account_id="example-card-id",
             account_name="Example Card",
             mask="1234",
             balance_subject_to_apr=Decimal("2500.00"),
@@ -19,6 +20,7 @@ def test_zero_percent_schedule_returns_each_promotional_balance():
             promo_offer_id="offer-1",
         ),
         Mock(
+            account_id="example-card-id",
             account_name="Example Card",
             mask="1234",
             balance_subject_to_apr=Decimal("900.50"),
@@ -32,6 +34,7 @@ def test_zero_percent_schedule_returns_each_promotional_balance():
 
     assert schedule == [
         {
+            "account_id": "example-card-id",
             "account_name": "Example Card",
             "mask": "1234",
             "balance": 2500.0,
@@ -39,6 +42,7 @@ def test_zero_percent_schedule_returns_each_promotional_balance():
             "promo_offer_id": "offer-1",
         },
         {
+            "account_id": "example-card-id",
             "account_name": "Example Card",
             "mask": "1234",
             "balance": 900.5,
