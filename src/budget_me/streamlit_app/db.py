@@ -24,7 +24,7 @@ from budget_me.db.models.category_budget import CategoryBudget
 from budget_me.db.models.credit_liability import CreditLiability, CreditLiabilityApr
 from budget_me.db.models.loan_details import LoanDetails
 from budget_me.db.models.monthly_snapshot import MonthlySnapshot, SnapshotStatus
-from budget_me.db.models.plaid_item import PlaidItem
+from budget_me.db.models.plaid_item import PlaidItem, PlaidItemStatus
 from budget_me.db.models.snapshot_credit_card import SnapshotCreditCard
 from budget_me.db.models.snapshot_line_item import SnapshotLineItem
 from budget_me.db.models.transaction import Transaction
@@ -566,6 +566,7 @@ def get_zero_percent_balance_schedule(session: Session) -> list[dict]:
     """
     stmt = (
         select(
+            Account.account_id,
             func.coalesce(Account.display_name, Account.name).label("account_name"),
             Account.mask,
             CreditLiabilityApr.balance_subject_to_apr,
@@ -577,10 +578,12 @@ def get_zero_percent_balance_schedule(session: Session) -> list[dict]:
             CreditLiabilityApr.credit_liability_id == CreditLiability.id,
         )
         .join(Account, CreditLiability.account_id == Account.account_id)
+        .join(PlaidItem, Account.plaid_item_id == PlaidItem.id)
         .where(
             CreditLiabilityApr.apr_percentage == 0,
             CreditLiabilityApr.balance_subject_to_apr > 0,
             Account.is_excluded.is_(False),
+            PlaidItem.status == PlaidItemStatus.ACTIVE,
         )
         .order_by(
             CreditLiabilityApr.promo_rate_end_date.asc().nullslast(),
@@ -591,6 +594,7 @@ def get_zero_percent_balance_schedule(session: Session) -> list[dict]:
     rows = session.execute(stmt).fetchall()
     return [
         {
+            "account_id": row.account_id,
             "account_name": row.account_name,
             "mask": row.mask,
             "balance": float(row.balance_subject_to_apr),
@@ -625,9 +629,16 @@ def get_loans_with_interest(session: Session) -> list[dict]:
             LoanDetails.maturity_date,
             LoanDetails.lender_name,
             LoanDetails.collateral_description,
+            LoanDetails.source.label("terms_source"),
+            LoanDetails.updated_at.label("terms_updated_at"),
+            Account.updated_at.label("balance_updated_at"),
         )
         .join(Account, LoanDetails.account_id == Account.account_id)
-        .where(Account.is_excluded.is_(False))
+        .join(PlaidItem, Account.plaid_item_id == PlaidItem.id)
+        .where(
+            Account.is_excluded.is_(False),
+            PlaidItem.status == PlaidItemStatus.ACTIVE,
+        )
         .order_by(LoanDetails.loan_type, Account.name)
     )
 
@@ -652,6 +663,9 @@ def get_loans_with_interest(session: Session) -> list[dict]:
                 "maturity_date": row.maturity_date,
                 "lender_name": row.lender_name,
                 "collateral_description": row.collateral_description,
+                "terms_source": row.terms_source,
+                "terms_updated_at": row.terms_updated_at,
+                "balance_updated_at": row.balance_updated_at,
                 "monthly_interest": monthly_interest,
             }
         )
@@ -679,11 +693,14 @@ def get_cc_calculated_interest(session: Session) -> list[dict]:
             Account.mask,
             Account.balance_current,
             Account.payment_strategy,
+            Account.updated_at.label("balance_updated_at"),
         )
+        .join(PlaidItem, Account.plaid_item_id == PlaidItem.id)
         .where(
             Account.subtype == "credit card",
             Account.balance_current > 0,
             Account.is_excluded.is_(False),
+            PlaidItem.status == PlaidItemStatus.ACTIVE,
         )
         .order_by(Account.name)
     )
@@ -694,6 +711,9 @@ def get_cc_calculated_interest(session: Session) -> list[dict]:
     cards = []
     for account in accounts:
         calculated_interest = 0.0
+        apr_balance_total = 0.0
+        allocation_difference = 0.0
+        allocation_reconciled = True
 
         # pay_in_full strategy: zero interest (grace period)
         if account.payment_strategy == "pay_in_full":
@@ -712,7 +732,6 @@ def get_cc_calculated_interest(session: Session) -> list[dict]:
                 )
                 .where(
                     CreditLiability.account_id == account.account_id,
-                    CreditLiabilityApr.apr_percentage > 0,
                     CreditLiabilityApr.balance_subject_to_apr > 0,
                 )
             )
@@ -726,8 +745,16 @@ def get_cc_calculated_interest(session: Session) -> list[dict]:
                     continue
                 balance = float(apr.balance_subject_to_apr)
                 rate = float(apr.apr_percentage)
-                monthly_int = (balance * rate / 100) / 12
-                calculated_interest += monthly_int
+                apr_balance_total += balance
+                if rate > 0:
+                    monthly_int = (balance * rate / 100) / 12
+                    calculated_interest += monthly_int
+
+            current_balance = float(account.balance_current or 0)
+            allocation_difference = current_balance - apr_balance_total
+            allocation_reconciled = abs(allocation_difference) <= 1.0
+            if not allocation_reconciled:
+                calculated_interest = None
 
         cards.append(
             {
@@ -739,6 +766,10 @@ def get_cc_calculated_interest(session: Session) -> list[dict]:
                 else 0.0,
                 "payment_strategy": account.payment_strategy,
                 "calculated_interest": calculated_interest,
+                "apr_balance_total": apr_balance_total,
+                "allocation_difference": allocation_difference,
+                "allocation_reconciled": allocation_reconciled,
+                "balance_updated_at": account.balance_updated_at,
             }
         )
 
@@ -1454,10 +1485,13 @@ def get_expiring_promos(session: Session, within_days: int = 60) -> list[dict]:
             CreditLiabilityApr.credit_liability_id == CreditLiability.id,
         )
         .join(Account, CreditLiability.account_id == Account.account_id)
+        .join(PlaidItem, Account.plaid_item_id == PlaidItem.id)
         .where(
             CreditLiabilityApr.promo_rate_end_date.isnot(None),
+            CreditLiabilityApr.promo_rate_end_date >= date.today(),
             CreditLiabilityApr.promo_rate_end_date <= end_date,
             Account.is_excluded.is_(False),
+            PlaidItem.status == PlaidItemStatus.ACTIVE,
         )
         .order_by(CreditLiabilityApr.promo_rate_end_date)
     )

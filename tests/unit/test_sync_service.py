@@ -559,6 +559,70 @@ class TestSyncService:
         assert result.item_results[0].error_message == "User needs to relogin"
 
     @pytest.mark.asyncio
+    async def test_sync_service_reports_liability_failure(self, mocker):
+        """A liability refresh failure must not publish a successful debt sync."""
+        from budget_me.db.models.ingest_run import IngestRun, IngestRunItem
+        from budget_me.db.models.plaid_item import PlaidItem
+        from budget_me.plaid.errors import PlaidError
+        from budget_me.services.sync_service import SyncService
+
+        mock_session = mocker.AsyncMock()
+        mock_item = mocker.MagicMock(spec=PlaidItem)
+        mock_item.id = uuid4()
+        mock_item.institution_id = "ins_debt"
+        mock_item.item_id = "item_debt"
+        mock_item.products = ["transactions", "liabilities"]
+        mock_item.last_success_at = None
+
+        mock_run = mocker.MagicMock(spec=IngestRun)
+        mock_run.id = uuid4()
+        mock_run_item = mocker.MagicMock(spec=IngestRunItem)
+        mock_run_item.id = uuid4()
+
+        mock_ingest_repo = mocker.MagicMock()
+        mock_ingest_repo.create_run = mocker.AsyncMock(return_value=mock_run)
+        mock_ingest_repo.add_run_item = mocker.AsyncMock(return_value=mock_run_item)
+        mock_ingest_repo.complete_run_item = mocker.AsyncMock()
+        mock_ingest_repo.complete_run = mocker.AsyncMock(return_value=mock_run)
+        mocker.patch(
+            "budget_me.services.sync_service.IngestRunsRepo",
+            return_value=mock_ingest_repo,
+        )
+
+        mock_items_repo = mocker.MagicMock()
+        mock_items_repo.find_active = mocker.AsyncMock(return_value=[mock_item])
+        mocker.patch(
+            "budget_me.services.sync_service.ItemsRepo",
+            return_value=mock_items_repo,
+        )
+        mocker.patch(
+            "budget_me.services.sync_service.sync_item",
+            mocker.AsyncMock(
+                return_value=ItemSyncResult(added=1, modified=0, removed=0)
+            ),
+        )
+        mocker.patch(
+            "budget_me.services.sync_service.sync_liabilities",
+            mocker.AsyncMock(
+                side_effect=PlaidError(
+                    message="Liabilities unavailable",
+                    error_code="PRODUCT_NOT_READY",
+                    status=400,
+                )
+            ),
+        )
+
+        result = await SyncService(mock_session).run_sync()
+
+        assert result.status == IngestRunStatus.FAILED
+        assert result.items_ok == 0
+        assert result.items_failed == 1
+        assert mock_item.last_success_at is None
+        call_kwargs = mock_ingest_repo.complete_run_item.call_args.kwargs
+        assert call_kwargs["status"] == IngestRunItemStatus.FAILED
+        assert call_kwargs["error_code"] == "PRODUCT_NOT_READY"
+
+    @pytest.mark.asyncio
     async def test_sync_service_sets_run_type(self, mocker):
         """run_sync sets run_type on IngestRun based on parameter."""
         from budget_me.db.models.ingest_run import IngestRun

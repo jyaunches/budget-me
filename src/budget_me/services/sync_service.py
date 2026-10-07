@@ -209,6 +209,18 @@ class SyncService:
                     item.id, include_transactions=include_transactions
                 )
 
+                # Liability data is part of a complete debt refresh. Let failures
+                # flow through the normal item failure path so scheduled runs are
+                # reported as partial instead of silently publishing stale debt.
+                if "liabilities" in item.products:
+                    liabilities_result = await sync_liabilities(item.id)
+                    if not liabilities_result.skipped:
+                        logger.info(
+                            "Liabilities synced",
+                            accounts_updated=liabilities_result.accounts_updated,
+                            aprs_tracked=liabilities_result.aprs_tracked,
+                        )
+
                 item_result.success = True
                 item_result.added = result.added
                 item_result.modified = result.modified
@@ -255,6 +267,10 @@ class SyncService:
                 total_modified += result.modified
                 total_removed += result.removed
 
+                item.last_success_at = datetime.now(UTC)
+                item.last_error_code = None
+                item.last_error_message = None
+
                 # Complete the run item as success
                 item_result.duration_ms = int((time.monotonic() - item_start) * 1000)
                 await self.ingest_runs_repo.complete_run_item(
@@ -274,23 +290,6 @@ class SyncService:
                     removed=result.removed,
                     duration_ms=item_result.duration_ms,
                 )
-
-                # Sync liabilities if product is enabled
-                if "liabilities" in item.products:
-                    try:
-                        liabilities_result = await sync_liabilities(item.id)
-                        if not liabilities_result.skipped:
-                            logger.info(
-                                "Liabilities synced",
-                                accounts_updated=liabilities_result.accounts_updated,
-                                aprs_tracked=liabilities_result.aprs_tracked,
-                            )
-                    except Exception as e:
-                        # Log but don't fail the overall sync for liabilities errors
-                        logger.warning(
-                            "Failed to sync liabilities",
-                            error_type=type(e).__name__,
-                        )
 
             except PlaidError as e:
                 items_failed += 1

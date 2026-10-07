@@ -1,6 +1,6 @@
 """Unit tests for Debt Dashboard - Loan Queries (Phase 1)."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from unittest.mock import Mock
 
@@ -29,6 +29,9 @@ class TestGetLoansWithInterest:
                 maturity_date=date(2050, 1, 1),
                 lender_name="Example Mortgage",
                 collateral_description=None,
+                terms_source="manual",
+                terms_updated_at=datetime(2025, 12, 31, tzinfo=UTC),
+                balance_updated_at=datetime(2026, 10, 5, tzinfo=UTC),
             ),
             Mock(
                 loan_type=LoanType.AUTO,
@@ -40,6 +43,9 @@ class TestGetLoansWithInterest:
                 maturity_date=date(2031, 1, 1),
                 lender_name="Example Auto Lender",
                 collateral_description="Example Vehicle",
+                terms_source="manual",
+                terms_updated_at=datetime(2025, 12, 31, tzinfo=UTC),
+                balance_updated_at=datetime(2026, 10, 5, tzinfo=UTC),
             ),
         ]
 
@@ -63,6 +69,7 @@ class TestGetLoansWithInterest:
         assert mortgage["monthly_payment"] == 987.65
         assert mortgage["maturity_date"] == date(2050, 1, 1)
         assert mortgage["lender_name"] == "Example Mortgage"
+        assert mortgage["terms_source"] == "manual"
         assert "monthly_interest" in mortgage
 
         # Assert: Auto loan data is correct
@@ -94,6 +101,9 @@ class TestGetLoansWithInterest:
                 maturity_date=date(2050, 1, 1),
                 lender_name="Test Bank",
                 collateral_description=None,
+                terms_source="manual",
+                terms_updated_at=datetime(2025, 12, 31, tzinfo=UTC),
+                balance_updated_at=datetime(2026, 10, 5, tzinfo=UTC),
             ),
         ]
 
@@ -126,6 +136,9 @@ class TestGetLoansWithInterest:
                 maturity_date=date(2030, 1, 1),
                 lender_name="Test Bank",
                 collateral_description=None,
+                terms_source="manual",
+                terms_updated_at=datetime(2025, 12, 31, tzinfo=UTC),
+                balance_updated_at=datetime(2026, 10, 5, tzinfo=UTC),
             ),
         ]
 

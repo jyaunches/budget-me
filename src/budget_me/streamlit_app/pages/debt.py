@@ -1,6 +1,6 @@
 """Unified Debt Dashboard - All debt (mortgage, auto, credit cards) with interest analysis."""
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -15,6 +15,20 @@ from budget_me.streamlit_app.db import (
 )
 
 st.title("Debt Overview")
+
+
+def _balance_is_stale(updated_at: datetime | None) -> bool:
+    """Return whether a Plaid balance has not refreshed recently."""
+    if updated_at is None:
+        return True
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    return datetime.now(UTC) - updated_at > timedelta(days=3)
+
+
+def _format_refresh_date(updated_at: datetime | None) -> str:
+    return updated_at.strftime("%b %-d, %Y") if updated_at else "not recorded"
+
 
 # Fetch all debt data
 with get_session() as session:
@@ -34,9 +48,39 @@ total_debt = sum(loan["balance"] for loan in loans) + sum(
 )
 total_monthly_payment = sum(loan["monthly_payment"] for loan in loans)
 total_monthly_interest = sum(loan["monthly_interest"] for loan in loans) + sum(
-    card["calculated_interest"] for card in credit_cards
+    card["calculated_interest"] or 0 for card in credit_cards
 )
 total_annual_interest = total_monthly_interest * 12
+unreconciled_cards = [
+    card for card in credit_cards if not card["allocation_reconciled"]
+]
+stale_debts = [
+    debt
+    for debt in [*loans, *credit_cards]
+    if _balance_is_stale(debt["balance_updated_at"])
+]
+
+if unreconciled_cards:
+    card_names = ", ".join(
+        f"{card['account_name']} (...{card['mask']})"
+        if card["mask"]
+        else card["account_name"]
+        for card in unreconciled_cards
+    )
+    st.warning(
+        "APR allocations need statement reconciliation for "
+        f"{card_names}. Live card balances remain authoritative; calculated "
+        "credit-card interest is withheld until the APR buckets match."
+    )
+
+if stale_debts:
+    debt_names = ", ".join(
+        f"{debt['account_name']} (...{debt['mask']})"
+        if debt["mask"]
+        else debt["account_name"]
+        for debt in stale_debts
+    )
+    st.warning(f"Debt balances have not refreshed in more than 3 days: {debt_names}.")
 
 # Display summary metrics
 col1, col2, col3, col4 = st.columns(4)
@@ -45,7 +89,10 @@ with col1:
 with col2:
     st.metric("Monthly Payments", f"${total_monthly_payment:,.2f}")
 with col3:
-    st.metric("Monthly Interest", f"${total_monthly_interest:,.2f}")
+    interest_label = (
+        "Known Monthly Interest" if unreconciled_cards else "Monthly Interest"
+    )
+    st.metric(interest_label, f"${total_monthly_interest:,.2f}")
 with col4:
     st.metric("Annual Interest", f"${total_annual_interest:,.2f}")
 
@@ -93,6 +140,12 @@ if mortgage_loans:
                 if loan["maturity_date"]:
                     st.write(f"Maturity: **{loan['maturity_date'].strftime('%b %Y')}**")
 
+            st.caption(
+                f"Balance refreshed {_format_refresh_date(loan['balance_updated_at'])}. "
+                f"Loan terms are {loan['terms_source']} and were last updated "
+                f"{_format_refresh_date(loan['terms_updated_at'])}."
+            )
+
             st.divider()
 
 # --- AUTO LOAN SECTION ---
@@ -136,6 +189,12 @@ if auto_loans:
             with detail_col3:
                 if loan["maturity_date"]:
                     st.write(f"Maturity: **{loan['maturity_date'].strftime('%b %Y')}**")
+
+            st.caption(
+                f"Balance refreshed {_format_refresh_date(loan['balance_updated_at'])}. "
+                f"Loan terms are {loan['terms_source']} and were last updated "
+                f"{_format_refresh_date(loan['terms_updated_at'])}."
+            )
 
             st.divider()
 
@@ -191,11 +250,31 @@ if credit_cards:
         cc_display["strategy"] = (
             cc_display["payment_strategy"].str.replace("_", " ").str.title()
         )
+        cc_display["allocation_status"] = cc_df["allocation_reconciled"].map(
+            {True: "Reconciled", False: "Needs statement"}
+        )
+        cc_display["last_refreshed"] = cc_df["balance_updated_at"].map(
+            _format_refresh_date
+        )
 
         cc_final = cc_display[
-            ["account", "balance", "strategy", "calculated_interest"]
+            [
+                "account",
+                "balance",
+                "strategy",
+                "calculated_interest",
+                "allocation_status",
+                "last_refreshed",
+            ]
         ].copy()
-        cc_final.columns = ["Card", "Balance", "Strategy", "Monthly Interest"]
+        cc_final.columns = [
+            "Card",
+            "Balance",
+            "Strategy",
+            "Monthly Interest",
+            "APR Allocation",
+            "Last Refreshed",
+        ]
 
         st.dataframe(
             cc_final,
@@ -211,6 +290,7 @@ if credit_cards:
             st.markdown("**0% Balance Payoff Schedule:**")
             today = date.today()
             schedule_rows = []
+            cards_by_account_id = {card["account_id"]: card for card in credit_cards}
             for promo in zero_percent_schedule:
                 end_date = promo["promo_rate_end_date"]
                 if end_date:
@@ -230,6 +310,12 @@ if credit_cards:
                 card_name = promo["account_name"]
                 if promo["mask"]:
                     card_name = f"{card_name} (...{promo['mask']})"
+                card = cards_by_account_id.get(promo["account_id"])
+                allocation_status = (
+                    "Reconciled"
+                    if card and card["allocation_reconciled"]
+                    else "Needs statement"
+                )
 
                 schedule_rows.append(
                     {
@@ -237,6 +323,7 @@ if credit_cards:
                         "0% Balance": promo["balance"],
                         "Pay By (0% Ends)": pay_by,
                         "Time Remaining": timing,
+                        "APR Allocation": allocation_status,
                     }
                 )
 
@@ -266,7 +353,7 @@ mortgage_interest = sum(
 auto_interest = sum(
     loan["monthly_interest"] for loan in loans if loan["loan_type"] == "auto"
 )
-cc_interest = sum(card["calculated_interest"] for card in credit_cards)
+cc_interest = sum(card["calculated_interest"] or 0 for card in credit_cards)
 
 # Calculate percentages
 total_interest = mortgage_interest + auto_interest + cc_interest

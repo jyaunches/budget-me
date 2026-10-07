@@ -59,6 +59,8 @@ class TestDebtPageStructure:
         # Verify credit card section exists
         assert "credit_cards" in source.lower()
         assert "st.dataframe" in source
+        assert "APR Allocation" in source
+        assert "Needs statement" in source
 
     def test_debt_page_has_interest_analysis(self):
         """Debt page has interest analysis section."""
