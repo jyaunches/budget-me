@@ -13,7 +13,7 @@
 Budget Me is a self-hosted personal-finance blueprint for one person or trusted
 household. It imports account data through Plaid, stores it in Supabase
 PostgreSQL, and provides a Streamlit interface for transactions, budgets, debt,
-forecasts, and monthly snapshots.
+forecasts, retirement planning, and monthly snapshots.
 
 > **Experimental blueprint:** there is no hosted Budget Me service, stable
 > release, maintenance commitment, or security-response SLA. Begin with Plaid
@@ -41,7 +41,7 @@ installation represents one trusted household.
 | Component | Role |
 |---|---|
 | Coding-agent harness | Conversational interface for setup and reviewed finance workflows; Budget Me does not bundle a model or chat service. |
-| Streamlit | Visual interface for accounts, transactions, budgets, cards, debt, forecasts, and snapshots. |
+| Streamlit | Visual interface for accounts, transactions, budgets, cards, debt, forecasts, retirement planning, and snapshots. |
 | Supabase | PostgreSQL storage for financial data, configuration, and encrypted Plaid access tokens. |
 | Plaid | Account, transaction, balance, supported liability, and optional investment holdings data. |
 | Fernet key | Installation-owned key that encrypts Plaid access tokens before database storage. |

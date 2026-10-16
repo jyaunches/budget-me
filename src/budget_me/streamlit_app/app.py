@@ -31,6 +31,7 @@ pg = st.navigation(
         st.Page("pages/link_account.py", title="Link Account", icon="🔗"),
         st.Page("pages/monthly_snapshot.py", title="Monthly Snapshot", icon="📊"),
         st.Page("pages/yearly_forecast.py", title="Yearly Forecast", icon="📈"),
+        st.Page("pages/retirement.py", title="Retirement Planner", icon="🌅"),
         st.Page("pages/budget.py", title="Budget", icon="🎯"),
         st.Page("pages/transactions.py", title="Transactions", icon="💳"),
         st.Page("pages/accounts.py", title="Accounts", icon="🏦"),
