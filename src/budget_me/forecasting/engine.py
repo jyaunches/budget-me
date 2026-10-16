@@ -23,6 +23,14 @@ class MonthActuals:
     expenses: Decimal
     cc_payments: Decimal
     closing_balance: Decimal  # Used as next month's starting balance
+    starting_balance: Decimal | None = None
+    earned_income: Decimal | None = None
+    transfer_in: Decimal = Decimal("0.00")
+    equity_disbursements: Decimal = Decimal("0.00")
+    reimbursement_in: Decimal = Decimal("0.00")
+    direct_expenses: Decimal | None = None
+    transfer_out: Decimal = Decimal("0.00")
+    reimbursement_out: Decimal = Decimal("0.00")
 
 
 @dataclass
@@ -40,6 +48,14 @@ class MonthProjection:
     funding_needed: Decimal  # How much to draw from sources this month
     cumulative_funding: Decimal  # Total drawn so far
     notes: list[str] = field(default_factory=list)  # Inflection points, one-time items
+    data_source: str = "forecast"  # "closed_actual" or "forecast"
+    earned_income: Decimal = Decimal("0.00")
+    transfer_in: Decimal = Decimal("0.00")
+    equity_disbursements: Decimal = Decimal("0.00")
+    reimbursement_in: Decimal = Decimal("0.00")
+    direct_expenses: Decimal = Decimal("0.00")
+    transfer_out: Decimal = Decimal("0.00")
+    reimbursement_out: Decimal = Decimal("0.00")
 
 
 @dataclass
@@ -175,6 +191,7 @@ def expand_anticipated_items(
                     "name": item.name,
                     "amount": item.amount,
                     "item_type": item.item_type,
+                    "category": getattr(item, "category", None),
                     "frequency": item.frequency,
                 }
             )
@@ -248,11 +265,31 @@ def calculate_projection(
             month_income = month_actuals.income
             month_fixed_expenses = month_actuals.expenses
             month_cc_payments = month_actuals.cc_payments
-            month_starting = current_balance
+            month_starting = (
+                month_actuals.starting_balance
+                if month_actuals.starting_balance is not None
+                else current_balance
+            )
             month_ending = month_actuals.closing_balance
             month_total_expenses = month_fixed_expenses + month_cc_payments
             month_net = month_income - month_total_expenses
             month_funding = Decimal("0.00")  # Actuals don't need funding
+            month_data_source = "closed_actual"
+            month_earned_income = (
+                month_actuals.earned_income
+                if month_actuals.earned_income is not None
+                else month_actuals.income
+            )
+            month_transfer_in = month_actuals.transfer_in
+            month_equity_disbursements = month_actuals.equity_disbursements
+            month_reimbursement_in = month_actuals.reimbursement_in
+            month_direct_expenses = (
+                month_actuals.direct_expenses
+                if month_actuals.direct_expenses is not None
+                else month_actuals.expenses
+            )
+            month_transfer_out = month_actuals.transfer_out
+            month_reimbursement_out = month_actuals.reimbursement_out
         else:
             # Use anticipated items (current behavior)
             month_items = expanded.get(current_month, [])
@@ -262,11 +299,20 @@ def calculate_projection(
                 item["amount"] for item in month_items if item["item_type"] == "income"
             )
             month_fixed_expenses = sum(
-                item["amount"] for item in month_items if item["item_type"] == "expense"
+                item["amount"]
+                for item in month_items
+                if item["item_type"] == "expense"
+                and item.get("category") != "credit_card_payment"
+            )
+            scheduled_cc_payments = sum(
+                item["amount"]
+                for item in month_items
+                if item["item_type"] == "expense"
+                and item.get("category") == "credit_card_payment"
             )
 
             # Add CC payments
-            month_cc_payments = total_cc_per_month
+            month_cc_payments = total_cc_per_month + scheduled_cc_payments
 
             # Calculate totals
             month_total_expenses = month_fixed_expenses + month_cc_payments
@@ -283,6 +329,15 @@ def calculate_projection(
                 month_ending = Decimal("0.00")
                 cumulative_funding += month_funding
                 total_funding_required += month_funding
+
+            month_data_source = "forecast"
+            month_earned_income = month_income
+            month_transfer_in = Decimal("0.00")
+            month_equity_disbursements = Decimal("0.00")
+            month_reimbursement_in = Decimal("0.00")
+            month_direct_expenses = month_fixed_expenses
+            month_transfer_out = Decimal("0.00")
+            month_reimbursement_out = Decimal("0.00")
 
         # Calculate runway (first month balance goes to zero)
         if not runway_calculated:
@@ -309,6 +364,14 @@ def calculate_projection(
             funding_needed=month_funding,
             cumulative_funding=cumulative_funding,
             notes=[],
+            data_source=month_data_source,
+            earned_income=month_earned_income,
+            transfer_in=month_transfer_in,
+            equity_disbursements=month_equity_disbursements,
+            reimbursement_in=month_reimbursement_in,
+            direct_expenses=month_direct_expenses,
+            transfer_out=month_transfer_out,
+            reimbursement_out=month_reimbursement_out,
         )
         monthly_breakdown.append(projection)
 

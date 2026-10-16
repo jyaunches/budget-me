@@ -20,6 +20,7 @@ class MockItem:
     amount: Decimal
     item_type: str
     frequency: str
+    category: str | None = None
     start_month: str | None = None
     end_month: str | None = None
 
@@ -227,6 +228,34 @@ def test_calculate_projection_with_cc_payments():
     assert first_month.net == Decimal("5000.00")  # 10000 income - 5000 cc
 
 
+def test_scheduled_card_payment_is_reported_as_card_cash_flow() -> None:
+    """Dated promo payments do not appear as ordinary direct expenses."""
+    items = [
+        MockItem(
+            name="Promo payoff",
+            amount=Decimal("750.00"),
+            item_type="expense",
+            category="credit_card_payment",
+            frequency="one_time",
+            start_month="2026-12",
+            end_month="2026-12",
+        )
+    ]
+
+    result = calculate_projection(
+        anticipated_items=items,
+        credit_card_payments=[],
+        starting_balance=Decimal("1000.00"),
+        start_month="2026-12",
+        months=1,
+    )
+
+    month = result.monthly_breakdown[0]
+    assert month.fixed_expenses == Decimal("0.00")
+    assert month.cc_payments == Decimal("750.00")
+    assert month.total_expenses == Decimal("750.00")
+
+
 def test_calculate_projection_funding_needed():
     """Test that funding is needed when balance goes negative."""
     items = [
@@ -292,10 +321,18 @@ def test_calculate_projection_with_actuals_for_one_month():
     # Actual income was higher, expenses lower than anticipated
     actuals_by_month = {
         "2026-01": MonthActuals(
-            income=Decimal("12000.00"),  # Higher than anticipated 10000
-            expenses=Decimal("1500.00"),  # Lower than anticipated 2000
+            income=Decimal("14500.00"),  # Includes actual transfers/reimbursements
+            expenses=Decimal("1850.00"),  # Includes actual transfers/reimbursements
             cc_payments=Decimal("1200.00"),  # Actual CC payment
             closing_balance=Decimal("14300.00"),  # Actual ending balance
+            starting_balance=Decimal("2850.00"),
+            earned_income=Decimal("12000.00"),
+            transfer_in=Decimal("2000.00"),
+            equity_disbursements=Decimal("1750.00"),
+            reimbursement_in=Decimal("500.00"),
+            direct_expenses=Decimal("1500.00"),
+            transfer_out=Decimal("250.00"),
+            reimbursement_out=Decimal("100.00"),
         ),
     }
 
@@ -311,13 +348,23 @@ def test_calculate_projection_with_actuals_for_one_month():
     # Check first month uses actuals
     jan = result.monthly_breakdown[0]
     assert jan.year_month == "2026-01"
-    assert jan.income == Decimal("12000.00")  # From actuals
-    assert jan.fixed_expenses == Decimal("1500.00")  # From actuals
+    assert jan.data_source == "closed_actual"
+    assert jan.income == Decimal("14500.00")  # All actual inflows
+    assert jan.earned_income == Decimal("12000.00")
+    assert jan.transfer_in == Decimal("2000.00")
+    assert jan.equity_disbursements == Decimal("1750.00")
+    assert jan.reimbursement_in == Decimal("500.00")
+    assert jan.fixed_expenses == Decimal("1850.00")  # All non-card outflows
+    assert jan.direct_expenses == Decimal("1500.00")
+    assert jan.transfer_out == Decimal("250.00")
+    assert jan.reimbursement_out == Decimal("100.00")
     assert jan.cc_payments == Decimal("1200.00")  # From actuals
+    assert jan.starting_balance == Decimal("2850.00")
     assert jan.ending_balance == Decimal("14300.00")  # From actuals
 
     # Check second month uses anticipated (no actuals provided)
     feb = result.monthly_breakdown[1]
+    assert feb.data_source == "forecast"
     assert feb.year_month == "2026-02"
     assert feb.income == Decimal("10000.00")  # From anticipated
     assert feb.fixed_expenses == Decimal("2000.00")  # From anticipated
@@ -326,7 +373,7 @@ def test_calculate_projection_with_actuals_for_one_month():
     assert feb.starting_balance == Decimal("14300.00")
 
     # Totals should include both actual and projected months
-    assert result.total_income == Decimal("32000.00")  # 12000 + 10000 + 10000
+    assert result.total_income == Decimal("34500.00")  # 14500 + 10000 + 10000
 
 
 def test_calculate_projection_with_actuals_for_multiple_months():

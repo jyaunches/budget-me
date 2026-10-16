@@ -102,6 +102,7 @@ def test_all_budget_categories_defined(rules_data):
         "landscaping",
         "credit_card_payment",
         "transfer",
+        "equity_disbursement",
     }
 
     actual_categories = set(rules_data["categories"].keys())

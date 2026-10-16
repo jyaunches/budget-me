@@ -84,6 +84,9 @@ categories:
   transfer:
     description: Transfers between accounts, not spending
     examples: [Internal Transfer, Zelle Transfer]
+  equity_disbursement:
+    description: Cash proceeds distributed from vested or sold employer equity
+    examples: [Brokerage Equity Proceeds]
   uncategorized:
     description: Default category for unmatched transactions
     examples: []

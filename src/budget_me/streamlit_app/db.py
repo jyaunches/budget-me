@@ -20,6 +20,7 @@ from budget_me.config import get_settings
 from budget_me.db.models.account import Account
 from budget_me.db.models.account_balance_snapshot import AccountBalanceSnapshot
 from budget_me.db.models.anticipated_item import AnticipatedItem
+from budget_me.db.models.categorization_rule import CategorizationRule
 from budget_me.db.models.category_budget import CategoryBudget
 from budget_me.db.models.credit_liability import CreditLiability, CreditLiabilityApr
 from budget_me.db.models.investment import InvestmentHolding
@@ -94,6 +95,36 @@ TYPE_TO_CATEGORIES = {
 }
 
 
+def _reporting_budget_category_expression():
+    """Return the category shown in reports without mutating source transactions.
+
+    Equity disbursements were historically stored as generic transfers. Manual
+    categorization rules for this semantic category act as a presentation-only
+    correction, using the same case-insensitive, longest-substring precedence as
+    the categorization service. Other manual rules remain forward-looking so a
+    rule edit cannot silently restate unrelated historical reports.
+    """
+    normalized_name = func.lower(func.btrim(Transaction.name))
+    rule_category = (
+        select(CategorizationRule.category)
+        .where(
+            CategorizationRule.enabled.is_(True),
+            CategorizationRule.rule_type == "category",
+            CategorizationRule.source == "manual",
+            CategorizationRule.category == "equity_disbursement",
+            func.strpos(normalized_name, CategorizationRule.normalized_pattern) > 0,
+        )
+        .order_by(
+            func.length(CategorizationRule.normalized_pattern).desc(),
+            CategorizationRule.normalized_pattern,
+        )
+        .limit(1)
+        .correlate(Transaction.__table__)
+        .scalar_subquery()
+    )
+    return func.coalesce(rule_category, Transaction.budget_category)
+
+
 def get_transactions(
     session: Session,
     start_date: date | None = None,
@@ -125,6 +156,8 @@ def get_transactions(
     from sqlalchemy import and_, func, or_
     from sqlalchemy import text as sql_text
 
+    reporting_category = _reporting_budget_category_expression()
+
     # Build query with account join for display name
     # Use COALESCE to prefer display_name over name
     stmt = (
@@ -140,7 +173,7 @@ def get_transactions(
             Transaction.reviewed,
             Transaction.reviewed_at,
             Transaction.raw,
-            Transaction.budget_category,
+            reporting_category.label("budget_category"),
             Transaction.project_tag,
             func.coalesce(Account.display_name, Account.name).label("account_name"),
         )
@@ -160,12 +193,12 @@ def get_transactions(
     if categorized is not None:
         if categorized:
             # Categorized: budget_category IS NOT NULL
-            stmt = stmt.where(Transaction.budget_category.is_not(None))
+            stmt = stmt.where(reporting_category.is_not(None))
         else:
             # Uncategorized: budget_category IS NULL
-            stmt = stmt.where(Transaction.budget_category.is_(None))
+            stmt = stmt.where(reporting_category.is_(None))
     if budget_category is not None:
-        stmt = stmt.where(Transaction.budget_category == budget_category)
+        stmt = stmt.where(reporting_category == budget_category)
     if project_tag is not None:
         stmt = stmt.where(Transaction.project_tag == project_tag)
 
@@ -555,11 +588,12 @@ def get_budget_categories(session: Session) -> list[str]:
     Returns:
         Sorted list of category names (excludes NULL)
     """
+    reporting_category = _reporting_budget_category_expression()
     stmt = (
-        select(Transaction.budget_category)
-        .where(Transaction.budget_category.is_not(None))
+        select(reporting_category.label("budget_category"))
+        .where(reporting_category.is_not(None))
         .distinct()
-        .order_by(Transaction.budget_category)
+        .order_by(reporting_category)
     )
     result = session.execute(stmt)
     return [row[0] for row in result.fetchall()]
@@ -2691,26 +2725,29 @@ def get_category_actuals(
         "credit_card_payment",  # Paying off CC debt (spending already counted on card)
         "cc_payment",  # Alternate naming for credit card payments
         "transfer",  # Moving money between accounts
+        "equity_disbursement",  # Proceeds from equity, not spending
     ]
+
+    reporting_category = _reporting_budget_category_expression()
 
     stmt = (
         select(
-            Transaction.budget_category.label("category"),
+            reporting_category.label("category"),
             func.sum(Transaction.amount).label("total_spent"),
         )
         .where(
             Transaction.account_id.in_(all_account_ids),
-            Transaction.budget_category.is_not(None),
+            reporting_category.is_not(None),
             extract("year", Transaction.date) == year,
             extract("month", Transaction.date) == month,
             # Exclude reimbursable expenses and reimbursement income
             or_(Transaction.reimbursable.is_(None), ~Transaction.reimbursable),
             # Exclude money movement categories (not actual spending)
-            Transaction.budget_category.notin_(excluded_categories),
+            reporting_category.notin_(excluded_categories),
             # Only include expenses (positive amounts) - excludes income/credits
             Transaction.amount > 0,
         )
-        .group_by(Transaction.budget_category)
+        .group_by(reporting_category)
     )
 
     result = session.execute(stmt)
@@ -2769,7 +2806,10 @@ def get_category_transactions(
         "credit_card_payment",  # Paying off CC debt (spending already counted on card)
         "cc_payment",  # Alternate naming for credit card payments
         "transfer",  # Moving money between accounts
+        "equity_disbursement",  # Proceeds from equity, not spending
     ]
+
+    reporting_category = _reporting_budget_category_expression()
 
     stmt = (
         select(
@@ -2783,13 +2823,13 @@ def get_category_transactions(
         .join(Account, Transaction.account_id == Account.account_id)
         .where(
             Transaction.account_id.in_(all_account_ids),
-            Transaction.budget_category == category,
+            reporting_category == category,
             extract("year", Transaction.date) == year,
             extract("month", Transaction.date) == month,
             # Exclude reimbursable expenses and reimbursement income
             or_(Transaction.reimbursable.is_(None), ~Transaction.reimbursable),
             # Exclude money movement categories (not actual spending)
-            Transaction.budget_category.notin_(excluded_categories),
+            reporting_category.notin_(excluded_categories),
             # Only include expenses (positive amounts) - excludes income/credits
             Transaction.amount > 0,
         )
@@ -2830,11 +2870,12 @@ def get_available_budget_months(session: Session, account_id: str) -> list[dict]
     )
 
     # Months with categorized transactions
+    reporting_category = _reporting_budget_category_expression()
     transaction_months = (
         select(func.to_char(Transaction.date, "YYYY-MM").label("year_month"))
         .where(
             Transaction.account_id == account_id,
-            Transaction.budget_category.is_not(None),
+            reporting_category.is_not(None),
         )
         .distinct()
     )
@@ -3245,6 +3286,58 @@ class SnapshotTotals:
     net: Decimal
     reimbursement_in: Decimal = Decimal("0.00")
     reimbursement_out: Decimal = Decimal("0.00")
+    starting_balance: Decimal = Decimal("0.00")
+
+
+def _get_closed_equity_disbursement_total(session: Session, year_month: str) -> Decimal:
+    """Classify frozen transfer-in receipt rows using equity reporting rules.
+
+    Closed snapshot headers intentionally preserve transfers as a single total.
+    Their immutable reconciliation receipts retain the row-level evidence, so a
+    presentation-only categorization rule can split equity from other transfers
+    without changing the closed snapshot or its cash-flow math.
+    """
+    from budget_me.snapshots.reporting import get_reconciled_actual_report
+
+    patterns = (
+        session.execute(
+            select(CategorizationRule.normalized_pattern).where(
+                CategorizationRule.enabled.is_(True),
+                CategorizationRule.rule_type == "category",
+                CategorizationRule.source == "manual",
+                CategorizationRule.category == "equity_disbursement",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not patterns:
+        return Decimal("0.00")
+
+    snapshots = (
+        session.execute(
+            select(MonthlySnapshot).where(
+                MonthlySnapshot.year_month == year_month,
+                MonthlySnapshot.status == SnapshotStatus.CLOSED,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    total = Decimal("0.00")
+    for snapshot in snapshots:
+        if snapshot.account_id is None:
+            continue
+        report = get_reconciled_actual_report(
+            session, snapshot.year_month, snapshot.account_id
+        )
+        if report is None:
+            continue
+        for row in report.rows_for("transfer_in"):
+            normalized_description = row.description.strip().casefold()
+            if any(pattern in normalized_description for pattern in patterns):
+                total += row.amount
+    return total
 
 
 def get_snapshot_totals(
@@ -3290,12 +3383,24 @@ def get_snapshot_totals(
     total_reimbursement_out = Decimal("0.00")
     total_cc_payments = Decimal("0.00")
     total_net = Decimal("0.00")
+    total_starting_balance = Decimal("0.00")
     total_closing_balance = Decimal("0.00")
+    usable_snapshot_count = 0
 
     for snapshot in snapshots:
         if snapshot.status == SnapshotStatus.CLOSED:
             totals = _closed_snapshot_cache(snapshot)
             if totals is None:
+                # A few legacy, excluded accounts have empty closed snapshots.
+                # They are outside the active household forecast and should not
+                # prevent a complete active-account snapshot from being used.
+                excluded = session.execute(
+                    select(Account.is_excluded).where(
+                        Account.account_id == snapshot.account_id
+                    )
+                ).scalar_one_or_none()
+                if excluded:
+                    continue
                 return None
         elif snapshot.status == SnapshotStatus.OPEN and include_open:
             live = calculate_snapshot_totals(
@@ -3307,6 +3412,7 @@ def get_snapshot_totals(
         else:
             return None
 
+        usable_snapshot_count += 1
         total_income += totals["income_total"]
         total_expenses += totals["expense_total"]
         total_transfer_in += totals["transfer_in_total"]
@@ -3315,7 +3421,15 @@ def get_snapshot_totals(
         total_reimbursement_out += totals["reimbursement_out_total"]
         total_cc_payments += totals["credit_card_total"]
         total_net += totals["net"]
+        # Legacy closed snapshots may not have stored starting_balance, but a
+        # coherent frozen header always lets us derive it from closing - net.
+        total_starting_balance += totals.get(
+            "starting_balance", totals["closing_balance"] - totals["net"]
+        )
         total_closing_balance += totals["closing_balance"]
+
+    if usable_snapshot_count == 0:
+        return None
 
     expected_net = (
         total_income
@@ -3339,6 +3453,7 @@ def get_snapshot_totals(
         net=total_net,
         reimbursement_in=total_reimbursement_in,
         reimbursement_out=total_reimbursement_out,
+        starting_balance=total_starting_balance,
     )
 
 
@@ -3365,6 +3480,7 @@ def calculate_yearly_projection(
         MonthActuals,
         add_months,
         calculate_projection,
+        get_item_months_in_range,
     )
 
     # Determine start month
@@ -3383,6 +3499,7 @@ def calculate_yearly_projection(
         name: str
         amount: Decimal
         item_type: str
+        category: str | None
         frequency: str
         start_month: str | None = None
         end_month: str | None = None
@@ -3392,6 +3509,7 @@ def calculate_yearly_projection(
             name=item["name"],
             amount=item["amount"],
             item_type=item["item_type"],
+            category=item["category"],
             frequency=item["frequency"],
             start_month=item["start_month"],
             end_month=item["end_month"],
@@ -3399,33 +3517,20 @@ def calculate_yearly_projection(
         for item in items_data
     ]
 
-    # 2. Get credit card projections - use historical average if available
-    historical_cc_avg = get_historical_cc_average(session, months=3)
-
-    # Get individual card projections for display purposes
+    # 2. Use the current per-card projections for every forecast month. Closed
+    # months replace these estimates with their frozen snapshot card totals.
+    # Keeping one source for the table and card detail prevents the forecast from
+    # silently substituting a much larger historical average.
     cc_projections = get_credit_card_projections(session)
-
-    if historical_cc_avg is not None:
-        # Use historical average for forecasting (more consistent with snapshot data)
-        credit_card_payments = [
-            CardPayment(
-                account_id="historical_avg",
-                card_name="Historical Average (3mo)",
-                projected_payment=historical_cc_avg,
-                source="historical_3mo_avg",
-            )
-        ]
-    else:
-        # Fall back to individual card projections if no history
-        credit_card_payments = [
-            CardPayment(
-                account_id=cc["account_id"],
-                card_name=cc["card_name"],
-                projected_payment=cc["projected_payment"],
-                source=cc["projection_source"],
-            )
-            for cc in cc_projections
-        ]
+    credit_card_payments = [
+        CardPayment(
+            account_id=cc["account_id"],
+            card_name=cc["card_name"],
+            projected_payment=cc["projected_payment"],
+            source=cc["projection_source"],
+        )
+        for cc in cc_projections
+    ]
 
     # 3. Get funding sources (not used in projection engine yet, but available)
     funding_sources = get_funding_sources(session)
@@ -3441,6 +3546,9 @@ def calculate_yearly_projection(
             session, current_month, include_open=False
         )
         if snapshot_totals:
+            equity_disbursements = _get_closed_equity_disbursement_total(
+                session, current_month
+            )
             actuals_by_month[current_month] = MonthActuals(
                 income=(
                     snapshot_totals.income
@@ -3454,6 +3562,14 @@ def calculate_yearly_projection(
                 ),
                 cc_payments=snapshot_totals.cc_payments,
                 closing_balance=snapshot_totals.closing_balance,
+                starting_balance=snapshot_totals.starting_balance,
+                earned_income=snapshot_totals.income,
+                transfer_in=snapshot_totals.transfer_in,
+                equity_disbursements=equity_disbursements,
+                reimbursement_in=snapshot_totals.reimbursement_in,
+                direct_expenses=snapshot_totals.expenses,
+                transfer_out=snapshot_totals.transfer_out,
+                reimbursement_out=snapshot_totals.reimbursement_out,
             )
         current_month = add_months(current_month, 1)
 
@@ -3466,6 +3582,26 @@ def calculate_yearly_projection(
         months=months,
         actuals_by_month=actuals_by_month if actuals_by_month else None,
     )
+
+    end_month = add_months(start_month, months - 1)
+    scheduled_cc_payments = []
+    for item in anticipated_items:
+        if item.category != "credit_card_payment":
+            continue
+        forecast_months = [
+            month
+            for month in get_item_months_in_range(item, start_month, end_month)
+            if month not in actuals_by_month
+        ]
+        if forecast_months:
+            scheduled_cc_payments.append(
+                {
+                    "name": item.name,
+                    "amount": float(item.amount),
+                    "frequency": item.frequency,
+                    "months": forecast_months,
+                }
+            )
 
     # 7. Convert to dict
     return {
@@ -3482,9 +3618,57 @@ def calculate_yearly_projection(
                 "funding_needed": float(m.funding_needed),
                 "cumulative_funding": float(m.cumulative_funding),
                 "notes": m.notes,
+                "data_source": m.data_source,
+                "earned_income": float(m.earned_income),
+                "transfer_in": float(m.transfer_in),
+                "equity_disbursements": float(m.equity_disbursements),
+                "other_transfer_in": float(m.transfer_in - m.equity_disbursements),
+                "reimbursement_in": float(m.reimbursement_in),
+                "direct_expenses": float(m.direct_expenses),
+                "transfer_out": float(m.transfer_out),
+                "reimbursement_out": float(m.reimbursement_out),
             }
             for m in result.monthly_breakdown
         ],
+        "actual_months_count": sum(
+            m.data_source == "closed_actual" for m in result.monthly_breakdown
+        ),
+        "forecast_months_count": sum(
+            m.data_source == "forecast" for m in result.monthly_breakdown
+        ),
+        "total_earned_income": float(
+            sum((m.earned_income for m in result.monthly_breakdown), Decimal("0.00"))
+        ),
+        "total_transfer_in": float(
+            sum((m.transfer_in for m in result.monthly_breakdown), Decimal("0.00"))
+        ),
+        "total_equity_disbursements": float(
+            sum(
+                (m.equity_disbursements for m in result.monthly_breakdown),
+                Decimal("0.00"),
+            )
+        ),
+        "total_reimbursement_in": float(
+            sum(
+                (m.reimbursement_in for m in result.monthly_breakdown),
+                Decimal("0.00"),
+            )
+        ),
+        "total_direct_expenses": float(
+            sum(
+                (m.direct_expenses for m in result.monthly_breakdown),
+                Decimal("0.00"),
+            )
+        ),
+        "total_transfer_out": float(
+            sum((m.transfer_out for m in result.monthly_breakdown), Decimal("0.00"))
+        ),
+        "total_reimbursement_out": float(
+            sum(
+                (m.reimbursement_out for m in result.monthly_breakdown),
+                Decimal("0.00"),
+            )
+        ),
         "total_income": float(result.total_income),
         "total_fixed_expenses": float(result.total_fixed_expenses),
         "total_cc_payments": float(result.total_cc_payments),
@@ -3495,6 +3679,7 @@ def calculate_yearly_projection(
         "inflection_points": result.inflection_points,
         "funding_sources": funding_sources,
         "cc_projections": cc_projections,
+        "scheduled_cc_payments": scheduled_cc_payments,
         "starting_balance": float(starting_balance),
     }
 

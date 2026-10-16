@@ -352,12 +352,12 @@ class TestGetBudgetCategories:
         assert callable(db.get_budget_categories)
 
     def test_get_budget_categories_queries_distinct_categories(self):
-        """get_budget_categories uses DISTINCT on budget_category."""
+        """get_budget_categories selects distinct reporting categories."""
         from budget_me.streamlit_app.db import get_budget_categories
 
         source = inspect.getsource(get_budget_categories)
 
-        assert "Transaction.budget_category" in source
+        assert "_reporting_budget_category_expression" in source
         assert "distinct" in source.lower()
 
     def test_get_budget_categories_excludes_null(self):

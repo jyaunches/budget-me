@@ -87,6 +87,7 @@ def test_closed_account_and_household_reports_never_read_mutable_children() -> N
         net=Decimal("49.00"),
         reimbursement_in=Decimal("7.00"),
         reimbursement_out=Decimal("3.00"),
+        starting_balance=Decimal("1000.00"),
     )
     household_session.execute.assert_called_once()
 
@@ -111,6 +112,62 @@ def test_incomplete_or_incoherent_closed_headers_fail_closed() -> None:
         account_session.execute.return_value = _scalar_result(snapshot)
         with pytest.raises(ValueError, match="complete, coherent cached header"):
             db.calculate_snapshot_totals(account_session, "2025-12", "checking-1")
+
+
+def test_incomplete_excluded_legacy_snapshot_does_not_hide_household_actuals() -> None:
+    """An empty snapshot for an excluded account cannot block valid actuals."""
+    valid = _closed_snapshot()
+    excluded_empty = _closed_snapshot(
+        account_id="excluded-savings",
+        income_total=Decimal("0.00"),
+        transfer_in_total=None,
+    )
+    excluded_result = MagicMock()
+    excluded_result.scalar_one_or_none.return_value = True
+    session = MagicMock()
+    session.execute.side_effect = [
+        _scalars_result([excluded_empty, valid]),
+        excluded_result,
+    ]
+
+    totals = db.get_snapshot_totals(session, "2025-12", include_open=False)
+
+    assert totals is not None
+    assert totals.income == Decimal("100.00")
+    assert totals.cc_payments == Decimal("15.00")
+
+
+def test_closed_equity_total_uses_receipt_rows_and_reporting_rule() -> None:
+    """Equity is split from transfers without rewriting the frozen snapshot."""
+    patterns_result = MagicMock()
+    patterns_result.scalars.return_value.all.return_value = [
+        "example brokerage distribution"
+    ]
+    snapshots_result = _scalars_result([_closed_snapshot()])
+    session = MagicMock()
+    session.execute.side_effect = [patterns_result, snapshots_result]
+    report = SimpleNamespace(
+        rows_for=lambda flow_type: (
+            SimpleNamespace(
+                description="EXAMPLE BROKERAGE DISTRIBUTION",
+                amount=Decimal("1200.00"),
+            ),
+            SimpleNamespace(
+                description="EXAMPLE BANK INTERNAL TRANSFER",
+                amount=Decimal("200.00"),
+            ),
+        )
+        if flow_type == "transfer_in"
+        else ()
+    )
+
+    with patch(
+        "budget_me.snapshots.reporting.get_reconciled_actual_report",
+        return_value=report,
+    ):
+        total = db._get_closed_equity_disbursement_total(session, "2025-12")
+
+    assert total == Decimal("1200.00")
 
 
 def test_historical_card_average_uses_closed_cached_monthly_totals() -> None:
