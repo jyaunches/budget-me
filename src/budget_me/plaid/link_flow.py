@@ -12,8 +12,10 @@ from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.item_public_token_exchange_request import (
     ItemPublicTokenExchangeRequest,
 )
+from plaid.model.link_token_create_hosted_link import LinkTokenCreateHostedLink
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
+from plaid.model.link_token_get_request import LinkTokenGetRequest
 from plaid.model.link_token_transactions import LinkTokenTransactions
 from plaid.model.products import Products
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,6 +76,74 @@ def create_link_token(user_id: str, redirect_uri: str | None = None) -> str:
             message=f"Failed to create link token: {e.reason}",
             status=e.status,
         ) from e
+
+
+def create_hosted_link_session(
+    user_id: str, redirect_uri: str | None = None
+) -> dict[str, str]:
+    """Create a top-level Plaid Hosted Link session for a new connection.
+
+    Streamlit custom HTML runs in a nested ``srcdoc`` iframe with an opaque
+    origin. Hosted Link keeps Plaid in a normal, top-level secure browser tab
+    and lets the server retrieve the result after the user returns.
+    """
+    client = get_plaid_client()
+    try:
+        request_kwargs = {
+            "user": LinkTokenCreateRequestUser(client_user_id=user_id),
+            "client_name": "Budget Me",
+            "products": [Products("transactions")],
+            "additional_consented_products": [Products("liabilities")],
+            "country_codes": [CountryCode("US")],
+            "language": "en",
+            "transactions": LinkTokenTransactions(days_requested=90),
+            "hosted_link": LinkTokenCreateHostedLink(),
+        }
+        if redirect_uri:
+            request_kwargs["redirect_uri"] = redirect_uri
+
+        response = client.link_token_create(LinkTokenCreateRequest(**request_kwargs))
+        hosted_link_url = getattr(response, "hosted_link_url", None)
+        if not hosted_link_url:
+            raise PlaidError(message="Plaid did not return a Hosted Link URL")
+
+        return {
+            "link_token": response.link_token,
+            "hosted_link_url": hosted_link_url,
+        }
+    except ApiException as e:
+        raise PlaidError(
+            message=f"Failed to create Hosted Link session: {e.reason}",
+            status=e.status,
+        ) from e
+
+
+def get_hosted_link_public_tokens(link_token: str) -> list[str]:
+    """Return distinct public tokens from a completed Hosted Link session."""
+    client = get_plaid_client()
+    try:
+        response = client.link_token_get(LinkTokenGetRequest(link_token=link_token))
+    except ApiException as e:
+        raise PlaidError(
+            message=f"Failed to check Hosted Link session: {e.reason}",
+            status=e.status,
+        ) from e
+
+    public_tokens: list[str] = []
+    for link_session in response.link_sessions or []:
+        results = getattr(link_session, "results", None)
+        for item in getattr(results, "item_add_results", None) or []:
+            token = getattr(item, "public_token", None)
+            if token and token not in public_tokens:
+                public_tokens.append(token)
+
+        # Support older single-Item response shapes as a compatibility fallback.
+        on_success = getattr(link_session, "on_success", None)
+        token = getattr(on_success, "public_token", None)
+        if token and token not in public_tokens:
+            public_tokens.append(token)
+
+    return public_tokens
 
 
 def create_update_link_token(

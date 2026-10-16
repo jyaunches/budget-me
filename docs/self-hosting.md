@@ -175,7 +175,10 @@ This binds to `127.0.0.1`. Keep it loopback-only while
 `AUTH_REQUIRED=false`.
 
 Open [http://localhost:8501](http://localhost:8501), choose **Link Account**,
-and complete Plaid Link yourself. Plaid's current
+and select **Connect New Bank Account**. Budget Me opens Plaid Hosted Link in a
+separate secure browser tab because Streamlit's embedded HTML component is not
+a suitable top-level context for Plaid Link. Complete the Plaid flow, return to
+Budget Me, and select **Finish Connection**. Plaid's current
 [Sandbox credentials](https://plaid.com/docs/sandbox/test-credentials/) provide
 synthetic users and institutions.
 
@@ -362,6 +365,15 @@ See [SECURITY.md](../SECURITY.md).
 Sandbox intentionally offers test institutions and synthetic data. Live
 institutions require eligible Trial or Production access, and OAuth support
 depends on Plaid Dashboard configuration.
+
+### Plaid Link does not open
+
+New connections should open a top-level `secure.plaid.com` Hosted Link tab. A
+launcher rendered inside a Streamlit component iframe is an old integration
+path and can remain hidden in browsers even after Plaid's script loads. Refresh
+the app and start a new connection. For OAuth institutions, also confirm that
+`PLAID_REDIRECT_URI` exactly matches an HTTPS URI allowlisted in the Plaid
+Dashboard.
 
 ### Data is unavailable after inactivity
 

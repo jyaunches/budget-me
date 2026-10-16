@@ -12,9 +12,10 @@ from budget_me.config import get_settings
 from budget_me.db.engine import get_engine
 from budget_me.plaid.errors import PlaidError
 from budget_me.plaid.link_flow import (
+    create_hosted_link_session,
     create_item_relink_token,
-    create_link_token,
     exchange_public_token,
+    get_hosted_link_public_tokens,
     list_plaid_items_for_link,
     verify_item_relink,
 )
@@ -62,6 +63,11 @@ def _exchange_public_token_sync(public_token: str, user_id: str) -> dict:
 def _list_plaid_items_sync() -> list[dict[str, str | None]]:
     """Load non-secret connection metadata for the Link page."""
     return _run_async(list_plaid_items_for_link())
+
+
+def _finish_hosted_link_sync(link_token: str) -> list[str]:
+    """Load public tokens for a completed top-level Hosted Link session."""
+    return get_hosted_link_public_tokens(link_token)
 
 
 def _create_item_relink_token_sync(
@@ -437,13 +443,13 @@ else:
             if not user:
                 st.error("Authentication required. Please log in.")
                 st.stop()
-            token = create_link_token(
+            hosted_session = create_hosted_link_session(
                 user_id=_get_session_user_id(user),
                 redirect_uri=settings.plaid_redirect_uri,
             )
             st.session_state["plaid_link_session"] = {
                 "mode": "new",
-                "link_token": token,
+                **hosted_session,
             }
         except PlaidError as e:
             st.error(f"Failed to start Plaid Link: {e}")
@@ -462,12 +468,63 @@ else:
             else "Connect a new institution"
         )
         st.subheader(title)
-        plaid_html = get_plaid_link_html(
-            link_token=link_session["link_token"],
-            redirect_uri=settings.plaid_redirect_uri,
-            mode=mode,
-        )
-        st.components.v1.html(plaid_html, height=300, scrolling=False)
+        hosted_link_url = link_session.get("hosted_link_url")
+        if hosted_link_url:
+            st.write(
+                "Plaid will open in a separate secure tab. Complete the connection "
+                "there, return to this tab, and then finish it below."
+            )
+            st.link_button(
+                "Open Plaid Link",
+                hosted_link_url,
+                type="primary",
+                use_container_width=True,
+            )
+
+            if st.button(
+                "Finish Connection",
+                type="primary",
+                use_container_width=True,
+            ):
+                try:
+                    public_tokens = _finish_hosted_link_sync(link_session["link_token"])
+                    if not public_tokens:
+                        st.warning(
+                            "Plaid has not reported a completed connection yet. "
+                            "Finish the Plaid tab, then try again."
+                        )
+                    elif len(public_tokens) > 1:
+                        st.error(
+                            "Plaid returned multiple new connections. "
+                            "Budget Me has not saved any of them."
+                        )
+                    else:
+                        user = st.session_state.get("user")
+                        if not user:
+                            st.error("Authentication required. Please log in.")
+                            st.stop()
+                        _exchange_public_token_sync(
+                            public_token=public_tokens[0],
+                            user_id=_get_session_user_id(user),
+                        )
+                        st.session_state.pop("plaid_link_session", None)
+                        st.session_state["plaid_link_flash"] = (
+                            "Successfully linked the institution. Accounts will "
+                            "appear after the next transaction sync."
+                        )
+                        st.rerun()
+                except PlaidError as e:
+                    st.error(f"Failed to finish Plaid Link: {e}")
+                except Exception:
+                    st.error("Budget Me could not finish the connection.")
+                    logger.exception("Unexpected Hosted Link completion failure")
+        else:
+            plaid_html = get_plaid_link_html(
+                link_token=link_session["link_token"],
+                redirect_uri=settings.plaid_redirect_uri,
+                mode=mode,
+            )
+            st.components.v1.html(plaid_html, height=300, scrolling=False)
 
         if mode == "relink":
             st.caption(

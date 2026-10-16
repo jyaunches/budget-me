@@ -174,6 +174,44 @@ class TestLinkTokenCreation:
             exc_info.value
         )
 
+    def test_create_hosted_link_session_returns_top_level_url(self, mocker):
+        from budget_me.plaid.link_flow import create_hosted_link_session
+
+        mock_response = mocker.MagicMock(
+            link_token="link-sandbox-hosted",
+            hosted_link_url="https://secure.plaid.com/hl/test",
+        )
+        mock_client = mocker.MagicMock()
+        mock_client.link_token_create.return_value = mock_response
+        mocker.patch(
+            "budget_me.plaid.link_flow.get_plaid_client", return_value=mock_client
+        )
+
+        result = create_hosted_link_session("test-user")
+
+        assert result == {
+            "link_token": "link-sandbox-hosted",
+            "hosted_link_url": "https://secure.plaid.com/hl/test",
+        }
+        request = mock_client.link_token_create.call_args.args[0]
+        assert request.hosted_link is not None
+
+    def test_get_hosted_link_public_tokens_prefers_results(self, mocker):
+        from budget_me.plaid.link_flow import get_hosted_link_public_tokens
+
+        item = mocker.MagicMock(public_token="public-token")
+        results = mocker.MagicMock(item_add_results=[item])
+        link_session = mocker.MagicMock(results=results, on_success=None)
+        mock_client = mocker.MagicMock()
+        mock_client.link_token_get.return_value = mocker.MagicMock(
+            link_sessions=[link_session]
+        )
+        mocker.patch(
+            "budget_me.plaid.link_flow.get_plaid_client", return_value=mock_client
+        )
+
+        assert get_hosted_link_public_tokens("link-token") == ["public-token"]
+
 
 class TestTokenExchange:
     """Tests for public token exchange and item storage."""
