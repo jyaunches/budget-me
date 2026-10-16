@@ -161,7 +161,7 @@ uv run budget-me rules status
 ## 3. Link Plaid Sandbox and run the first sync
 
 1. Create or sign in to a Plaid team.
-2. Enable Transactions and Liabilities.
+2. Enable Transactions and Liabilities; optionally request Investments.
 3. Copy the team client ID and **Sandbox** secret into `.env`.
 4. Keep `PLAID_ENV=sandbox`.
 
@@ -175,12 +175,14 @@ This binds to `127.0.0.1`. Keep it loopback-only while
 `AUTH_REQUIRED=false`.
 
 Open [http://localhost:8501](http://localhost:8501), choose **Link Account**,
-and select **Connect New Bank Account**. Budget Me opens Plaid Hosted Link in a
-separate secure browser tab because Streamlit's embedded HTML component is not
-a suitable top-level context for Plaid Link. Complete the Plaid flow, return to
-Budget Me, and select **Finish Connection**. Plaid's current
+and complete Plaid Link yourself. Plaid's current
 [Sandbox credentials](https://plaid.com/docs/sandbox/test-credentials/) provide
 synthetic users and institutions.
+
+For an existing connection, choose **Check Connection Status**, then **Enable
+Investments** for that institution and complete the additional consent flow.
+For a separate investment institution, choose **Connect New Investment
+Account**. Product access may not be available until Plaid approves it.
 
 Run the initial synchronization:
 
@@ -188,6 +190,7 @@ Run the initial synchronization:
 uv run budget-me status
 uv run budget-me sync
 uv run budget-me liabilities
+uv run budget-me investments
 ```
 
 Refresh Streamlit and confirm:
@@ -195,6 +198,7 @@ Refresh Streamlit and confirm:
 - expected synthetic accounts and balances;
 - transaction history;
 - supported credit-card or loan liability details;
+- investment holdings for Items that have Investments consent;
 - categorization-rule counts; and
 - no live institution or Production Item.
 
@@ -326,7 +330,7 @@ restored database. Never rehearse against the live database.
 ## Security minimums
 
 Budget Me can store encrypted Plaid tokens and unencrypted account identifiers,
-balances, transactions, merchants, liabilities, budgets, forecasts,
+balances, transactions, investment holdings, merchants, liabilities, budgets, forecasts,
 reimbursements, notes, and raw provider objects.
 
 - Keep secrets, dumps, exports, statements, screenshots, and generated JSON out
@@ -365,15 +369,6 @@ See [SECURITY.md](../SECURITY.md).
 Sandbox intentionally offers test institutions and synthetic data. Live
 institutions require eligible Trial or Production access, and OAuth support
 depends on Plaid Dashboard configuration.
-
-### Plaid Link does not open
-
-New connections should open a top-level `secure.plaid.com` Hosted Link tab. A
-launcher rendered inside a Streamlit component iframe is an old integration
-path and can remain hidden in browsers even after Plaid's script loads. Refresh
-the app and start a new connection. For OAuth institutions, also confirm that
-`PLAID_REDIRECT_URI` exactly matches an HTTPS URI allowlisted in the Plaid
-Dashboard.
 
 ### Data is unavailable after inactivity
 

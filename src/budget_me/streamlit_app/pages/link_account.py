@@ -11,8 +11,13 @@ from loguru import logger
 from budget_me.config import get_settings
 from budget_me.db.engine import get_engine
 from budget_me.plaid.errors import PlaidError
+from budget_me.plaid.investment_link import (
+    create_item_investments_upgrade_token,
+    verify_item_investments_access,
+)
 from budget_me.plaid.link_flow import (
     create_hosted_link_session,
+    create_investment_link_token,
     create_item_relink_token,
     exchange_public_token,
     get_hosted_link_public_tokens,
@@ -54,13 +59,18 @@ def _run_async(coroutine):
     return asyncio.run(_await_with_fresh_engine(coroutine))
 
 
-def _exchange_public_token_sync(public_token: str, user_id: str) -> dict:
+def _exchange_public_token_sync(
+    public_token: str, user_id: str, products: list[str] | None = None
+) -> dict:
     """Run Plaid's async token exchange from Streamlit's synchronous script."""
-    exchange = exchange_public_token(public_token=public_token, user_id=user_id)
+    kwargs = {"public_token": public_token, "user_id": user_id}
+    if products is not None:
+        kwargs["products"] = products
+    exchange = exchange_public_token(**kwargs)
     return _run_async(exchange)
 
 
-def _list_plaid_items_sync() -> list[dict[str, str | None]]:
+def _list_plaid_items_sync() -> list[dict[str, object]]:
     """Load non-secret connection metadata for the Link page."""
     return _run_async(list_plaid_items_for_link())
 
@@ -68,6 +78,63 @@ def _list_plaid_items_sync() -> list[dict[str, str | None]]:
 def _finish_hosted_link_sync(link_token: str) -> list[str]:
     """Load public tokens for a completed top-level Hosted Link session."""
     return get_hosted_link_public_tokens(link_token)
+
+
+def _complete_hosted_link_if_ready(
+    link_session: Mapping[str, object], user: object
+) -> str:
+    """Exchange a completed Hosted Link result, or report why it is not ready."""
+    public_tokens = _finish_hosted_link_sync(str(link_session["link_token"]))
+    if not public_tokens:
+        return "pending"
+    if len(public_tokens) > 1:
+        return "multiple"
+
+    products = ["investments"] if link_session.get("mode") == "new_investment" else None
+    _exchange_public_token_sync(
+        public_token=public_tokens[0],
+        user_id=_get_session_user_id(user),
+        products=products,
+    )
+    return "complete"
+
+
+@st.fragment(run_every="5s")
+def _poll_hosted_link_completion() -> None:
+    """Automatically save a completed Hosted Link session in the background."""
+    link_session = st.session_state.get("plaid_link_session")
+    if not link_session or not link_session.get("hosted_link_url"):
+        return
+
+    st.caption("Waiting for Plaid to finish; this connection saves automatically.")
+    try:
+        status = _complete_hosted_link_if_ready(
+            link_session,
+            st.session_state.get("user"),
+        )
+    except PlaidError as e:
+        st.error(f"Budget Me could not check the Plaid connection yet: {e}")
+        return
+    except Exception:
+        st.error("Budget Me could not finish the connection automatically.")
+        logger.exception("Unexpected automatic Hosted Link completion failure")
+        return
+
+    if status == "pending":
+        return
+    if status == "multiple":
+        st.error(
+            "Plaid returned multiple new connections. Budget Me has not saved "
+            "any of them."
+        )
+        return
+
+    st.session_state.pop("plaid_link_session", None)
+    st.session_state["plaid_link_flash"] = (
+        "Successfully linked the institution. Accounts will appear after the "
+        "next transaction sync."
+    )
+    st.rerun()
 
 
 def _create_item_relink_token_sync(
@@ -88,6 +155,26 @@ def _create_item_relink_token_sync(
 def _verify_item_relink_sync(plaid_item_id: str) -> dict[str, str | None]:
     """Verify a completed update-mode session from Streamlit."""
     return _run_async(verify_item_relink(UUID(plaid_item_id)))
+
+
+def _create_item_investments_upgrade_token_sync(
+    plaid_item_id: str,
+    user_id: str,
+    redirect_uri: str | None,
+) -> str:
+    """Create Investments consent for an existing Item from Streamlit."""
+    return _run_async(
+        create_item_investments_upgrade_token(
+            plaid_item_id=UUID(plaid_item_id),
+            user_id=user_id,
+            redirect_uri=redirect_uri,
+        )
+    )
+
+
+def _verify_item_investments_sync(plaid_item_id: str) -> dict:
+    """Verify Investments access and pull initial holdings from Streamlit."""
+    return _run_async(verify_item_investments_access(UUID(plaid_item_id)))
 
 
 def _javascript_value(value: str) -> str:
@@ -121,8 +208,8 @@ def get_plaid_link_html(
         raise ValueError("link_token cannot be empty")
     if is_oauth_resume and not redirect_uri:
         raise ValueError("redirect_uri required for OAuth resume")
-    if mode not in {"new", "relink"}:
-        raise ValueError("mode must be 'new' or 'relink'")
+    if mode not in {"new", "new_investment", "relink", "upgrade_investments"}:
+        raise ValueError("unsupported Plaid Link mode")
 
     oauth_config = ""
     if is_oauth_resume and redirect_uri:
@@ -135,6 +222,14 @@ def get_plaid_link_html(
                     statusEl.className = "success";
                     statusEl.textContent =
                         "Reconnection completed. Click Verify Reconnection below.";
+        """
+    elif mode == "upgrade_investments":
+        button_label = "Authorize investments"
+        success_handler = """
+                    openButton.hidden = true;
+                    statusEl.className = "success";
+                    statusEl.textContent =
+                        "Authorization completed. Click Verify Investments below.";
         """
     else:
         button_label = "Open Plaid Link"
@@ -218,6 +313,7 @@ def get_plaid_link_html(
             const finishLink = document.getElementById("finish-link");
             let handler = null;
             let ready = false;
+            let opening = false;
 
             function showError(message) {{
                 statusEl.className = "error";
@@ -248,6 +344,7 @@ def get_plaid_link_html(
                             {success_handler}
                         }},
                         onExit: function(err, metadata) {{
+                            opening = false;
                             if (err) {{
                                 console.error("Plaid Link error", err);
                                 showError(
@@ -262,13 +359,25 @@ def get_plaid_link_html(
                         }},
                         onLoad: function() {{
                             window.clearTimeout(loadTimeout);
-                            ready = true;
-                            statusEl.className = "";
-                            statusEl.textContent =
-                                "Plaid Link is ready. Continue when you are ready.";
-                            openButton.disabled = false;
+                            if (!opening) {{
+                                statusEl.className = "";
+                                statusEl.textContent =
+                                    "Plaid Link is ready. Continue when you are ready.";
+                            }}
                         }},
                     }});
+                    if (!handler || typeof handler.open !== "function") {{
+                        throw new Error("Plaid Link did not return a usable handler.");
+                    }}
+                    // Plaid queues open() calls made before its onLoad callback.
+                    // Enable the user gesture as soon as create() returns so a
+                    // missing/delayed onLoad callback cannot deadlock the launcher.
+                    window.clearTimeout(loadTimeout);
+                    ready = true;
+                    statusEl.className = "";
+                    statusEl.textContent =
+                        "Plaid Link is ready. Continue when you are ready.";
+                    openButton.disabled = false;
                 }} catch (error) {{
                     console.error("Plaid Link initialization failed", error);
                     showError(
@@ -290,6 +399,7 @@ def get_plaid_link_html(
                     showError("Plaid Link is not ready. Reload the page and try again.");
                     return;
                 }}
+                opening = true;
                 openButton.disabled = true;
                 statusEl.className = "";
                 statusEl.textContent = "Opening Plaid Link…";
@@ -339,9 +449,14 @@ if public_token and link_success == "true" and not st.session_state.token_exchan
             st.error("Authentication required. Please log in.")
             st.stop()
 
+        link_session = st.session_state.get("plaid_link_session", {})
+        products = (
+            ["investments"] if link_session.get("mode") == "new_investment" else None
+        )
         _exchange_public_token_sync(
             public_token=public_token,
             user_id=_get_session_user_id(user),
+            products=products,
         )
         st.session_state.token_exchanged = True
         st.session_state.pop("plaid_link_session", None)
@@ -429,6 +544,44 @@ else:
                 st.error("Budget Me could not start the reconnection.")
                 logger.exception("Unexpected Plaid relink-token failure")
 
+    investment_candidates = [
+        item
+        for item in link_items
+        if item.get("status") == "active"
+        and "investments" not in item.get("products", [])
+    ]
+    if link_items and not investment_candidates:
+        st.success("All eligible connections already have Investments enabled.")
+
+    for item in investment_candidates:
+        institution = item.get("institution_name") or "Connected institution"
+        if st.button(
+            f"Enable Investments for {institution}",
+            key=f"investments-{item['id']}",
+            use_container_width=True,
+        ):
+            try:
+                user = st.session_state.get("user")
+                if not user:
+                    st.error("Authentication required. Please log in.")
+                    st.stop()
+                token = _create_item_investments_upgrade_token_sync(
+                    plaid_item_id=item["id"],
+                    user_id=_get_session_user_id(user),
+                    redirect_uri=settings.plaid_redirect_uri,
+                )
+                st.session_state["plaid_link_session"] = {
+                    "mode": "upgrade_investments",
+                    "item_id": item["id"],
+                    "institution_name": institution,
+                    "link_token": token,
+                }
+            except PlaidError as e:
+                st.error(f"Failed to request Investments access: {e}")
+            except Exception:
+                st.error("Budget Me could not start Investments authorization.")
+                logger.exception("Unexpected Investments upgrade-token failure")
+
     st.divider()
     st.subheader("Connect a new institution")
     st.write("Use this only when the institution is not already connected.")
@@ -458,21 +611,44 @@ else:
             st.error("Budget Me could not start Plaid Link.")
             logger.exception("Unexpected Plaid link-token failure")
 
+    if st.button("Connect New Investment Account", use_container_width=True):
+        try:
+            user = st.session_state.get("user")
+            if not user:
+                st.error("Authentication required. Please log in.")
+                st.stop()
+            token = create_investment_link_token(
+                user_id=_get_session_user_id(user),
+                redirect_uri=settings.plaid_redirect_uri,
+            )
+            st.session_state["plaid_link_session"] = {
+                "mode": "new_investment",
+                "link_token": token,
+            }
+        except PlaidError as e:
+            st.error(f"Failed to start investment Link: {e}")
+        except Exception:
+            st.error("Budget Me could not start investment Link.")
+            logger.exception("Unexpected investment link-token failure")
+
     link_session = st.session_state.get("plaid_link_session")
     if link_session:
         st.divider()
         mode = link_session["mode"]
-        title = (
-            f"Reconnect {link_session['institution_name']}"
-            if mode == "relink"
-            else "Connect a new institution"
-        )
+        if mode == "relink":
+            title = f"Reconnect {link_session['institution_name']}"
+        elif mode == "upgrade_investments":
+            title = f"Enable Investments for {link_session['institution_name']}"
+        elif mode == "new_investment":
+            title = "Connect a new investment institution"
+        else:
+            title = "Connect a new institution"
         st.subheader(title)
         hosted_link_url = link_session.get("hosted_link_url")
         if hosted_link_url:
             st.write(
                 "Plaid will open in a separate secure tab. Complete the connection "
-                "there, return to this tab, and then finish it below."
+                "there, then return here. Budget Me will save it automatically."
             )
             st.link_button(
                 "Open Plaid Link",
@@ -480,44 +656,7 @@ else:
                 type="primary",
                 use_container_width=True,
             )
-
-            if st.button(
-                "Finish Connection",
-                type="primary",
-                use_container_width=True,
-            ):
-                try:
-                    public_tokens = _finish_hosted_link_sync(link_session["link_token"])
-                    if not public_tokens:
-                        st.warning(
-                            "Plaid has not reported a completed connection yet. "
-                            "Finish the Plaid tab, then try again."
-                        )
-                    elif len(public_tokens) > 1:
-                        st.error(
-                            "Plaid returned multiple new connections. "
-                            "Budget Me has not saved any of them."
-                        )
-                    else:
-                        user = st.session_state.get("user")
-                        if not user:
-                            st.error("Authentication required. Please log in.")
-                            st.stop()
-                        _exchange_public_token_sync(
-                            public_token=public_tokens[0],
-                            user_id=_get_session_user_id(user),
-                        )
-                        st.session_state.pop("plaid_link_session", None)
-                        st.session_state["plaid_link_flash"] = (
-                            "Successfully linked the institution. Accounts will "
-                            "appear after the next transaction sync."
-                        )
-                        st.rerun()
-                except PlaidError as e:
-                    st.error(f"Failed to finish Plaid Link: {e}")
-                except Exception:
-                    st.error("Budget Me could not finish the connection.")
-                    logger.exception("Unexpected Hosted Link completion failure")
+            _poll_hosted_link_completion()
         else:
             plaid_html = get_plaid_link_html(
                 link_token=link_session["link_token"],
@@ -555,6 +694,38 @@ else:
                 except Exception:
                     st.error("Budget Me could not verify the reconnection.")
                     logger.exception("Unexpected Plaid relink verification failure")
+
+        if mode == "upgrade_investments":
+            st.caption(
+                "After Plaid reports success, verify access and pull current holdings."
+            )
+            if st.button(
+                "Verify Investments",
+                type="primary",
+                use_container_width=True,
+            ):
+                try:
+                    result = _verify_item_investments_sync(link_session["item_id"])
+                    institution = (
+                        result.get("institution_name")
+                        or link_session["institution_name"]
+                    )
+                    holdings = result.get("holdings_updated", 0)
+                    st.session_state.pop("plaid_link_session", None)
+                    st.session_state.pop("plaid_link_items", None)
+                    st.session_state["plaid_link_flash"] = (
+                        f"Investments enabled for {institution}; "
+                        f"{holdings} current holdings loaded."
+                    )
+                    st.rerun()
+                except PlaidError as e:
+                    st.error(
+                        "Plaid has not confirmed Investments access yet. "
+                        f"Complete Link and try Verify again: {e}"
+                    )
+                except Exception:
+                    st.error("Budget Me could not verify Investments access.")
+                    logger.exception("Unexpected Investments verification failure")
 
         if st.button("Cancel Link Session", use_container_width=True):
             st.session_state.pop("plaid_link_session", None)

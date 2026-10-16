@@ -43,7 +43,7 @@ installation represents one trusted household.
 | Coding-agent harness | Conversational interface for setup and reviewed finance workflows; Budget Me does not bundle a model or chat service. |
 | Streamlit | Visual interface for accounts, transactions, budgets, cards, debt, forecasts, and snapshots. |
 | Supabase | PostgreSQL storage for financial data, configuration, and encrypted Plaid access tokens. |
-| Plaid | Account, transaction, balance, and supported liability data. |
+| Plaid | Account, transaction, balance, supported liability, and optional investment holdings data. |
 | Fernet key | Installation-owned key that encrypts Plaid access tokens before database storage. |
 | GitHub Actions | Optional remote synchronization, categorization, and notification runner. |
 | Telegram | Optional outbound notifications; there is no inbound chat-to-agent integration. |
@@ -84,7 +84,8 @@ configuration.
 ### In Plaid
 
 - Create a Plaid team and accept its terms.
-- Enable Transactions and Liabilities for the complete application experience.
+- Enable Transactions and Liabilities for the complete application experience,
+  plus Investments when portfolio holdings are needed.
 - Enter the client ID and environment-specific secret privately.
 - Personally complete Link, OAuth, consent, re-consent, and relinking.
 

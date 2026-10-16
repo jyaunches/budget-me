@@ -24,6 +24,13 @@ class TestDbModuleFunctions:
         assert hasattr(db, "get_all_accounts_with_details")
         assert callable(db.get_all_accounts_with_details)
 
+    def test_get_investment_holdings_summary_is_exported(self):
+        """Investment holdings summary is available to Streamlit pages."""
+        from budget_me.streamlit_app import db
+
+        assert hasattr(db, "get_investment_holdings_summary")
+        assert callable(db.get_investment_holdings_summary)
+
     def test_update_account_display_name_is_exported(self):
         """update_account_display_name function is exported from db module."""
         from budget_me.streamlit_app import db
@@ -91,6 +98,20 @@ class TestGetAllAccountsWithDetails:
 
         assert "PlaidItem.institution_id" in source
         assert "outerjoin" in source.lower()
+
+
+class TestGetInvestmentHoldingsSummary:
+    """Tests for the holdings-backed account summary."""
+
+    def test_uses_holdings_values_and_groups_by_currency(self):
+        from budget_me.streamlit_app.db import get_investment_holdings_summary
+
+        source = inspect.getsource(get_investment_holdings_summary)
+
+        assert "InvestmentHolding.institution_value" in source
+        assert "InvestmentHolding.iso_currency_code" in source
+        assert "PlaidItem.institution_name" in source
+        assert "func.sum" in source
 
 
 class TestUpdateAccountDisplayName:

@@ -27,12 +27,25 @@ def test_launcher_surfaces_script_failure_and_timeout():
     assert "Plaid Link could not be initialized" in html
     assert "Plaid Link could not be opened" in html
 
-    initialize_block = html.split("function initializePlaid()", 1)[1]
-    initialize_block = initialize_block.split("onLoad: function()", 1)[0]
-    assert "clearTimeout(loadTimeout)" not in initialize_block
     assert (
         "onLoad: function() {\n                            window.clearTimeout" in html
     )
+
+
+def test_launcher_is_enabled_when_create_returns_a_usable_handler():
+    from budget_me.streamlit_app.pages.link_account import get_plaid_link_html
+
+    html = get_plaid_link_html("link-test", redirect_uri=None)
+
+    create_position = html.index("handler = window.Plaid.create")
+    handler_check_position = html.index(
+        'if (!handler || typeof handler.open !== "function")'
+    )
+    ready_position = html.index("ready = true", handler_check_position)
+    enable_position = html.index("openButton.disabled = false", ready_position)
+
+    assert create_position < handler_check_position < ready_position < enable_position
+    assert "Plaid queues open() calls made before its onLoad callback" in html
 
 
 def test_new_connection_requires_explicit_finish_navigation():

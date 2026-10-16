@@ -27,6 +27,7 @@ from budget_me.db.models.plaid_item import PlaidItemStatus
 from budget_me.db.repos import AccountsRepo, CursorsRepo, ItemsRepo
 from budget_me.plaid.client import get_plaid_client
 from budget_me.plaid.errors import PlaidError
+from budget_me.plaid.investments_sync import sync_investments_for_access_token
 
 
 def create_link_token(user_id: str, redirect_uri: str | None = None) -> str:
@@ -81,7 +82,7 @@ def create_link_token(user_id: str, redirect_uri: str | None = None) -> str:
 def create_hosted_link_session(
     user_id: str, redirect_uri: str | None = None
 ) -> dict[str, str]:
-    """Create a top-level Plaid Hosted Link session for a new connection.
+    """Create a top-level Plaid Hosted Link session for a new bank connection.
 
     Streamlit custom HTML runs in a nested ``srcdoc`` iframe with an opaque
     origin. Hosted Link keeps Plaid in a normal, top-level secure browser tab
@@ -146,6 +147,56 @@ def get_hosted_link_public_tokens(link_token: str) -> list[str]:
     return public_tokens
 
 
+def create_investment_link_token(user_id: str, redirect_uri: str | None = None) -> str:
+    """Create a Link token restricted to investment-compatible accounts."""
+    client = get_plaid_client()
+    try:
+        request_kwargs = {
+            "user": LinkTokenCreateRequestUser(client_user_id=user_id),
+            "client_name": "Budget Me",
+            "products": [Products("investments")],
+            "country_codes": [CountryCode("US")],
+            "language": "en",
+        }
+        if redirect_uri:
+            request_kwargs["redirect_uri"] = redirect_uri
+
+        response = client.link_token_create(LinkTokenCreateRequest(**request_kwargs))
+        return response.link_token
+    except ApiException as e:
+        raise PlaidError(
+            message=f"Failed to create investment link token: {e.reason}",
+            status=e.status,
+        ) from e
+
+
+def create_investments_upgrade_token(
+    access_token: str,
+    user_id: str,
+    redirect_uri: str | None = None,
+) -> str:
+    """Create update-mode Link consent for Investments on an existing Item."""
+    client = get_plaid_client()
+    try:
+        request_kwargs = {
+            "user": LinkTokenCreateRequestUser(client_user_id=user_id),
+            "client_name": "Budget Me",
+            "country_codes": [CountryCode("US")],
+            "language": "en",
+            "access_token": access_token,
+            "additional_consented_products": [Products("investments")],
+        }
+        if redirect_uri:
+            request_kwargs["redirect_uri"] = redirect_uri
+        response = client.link_token_create(LinkTokenCreateRequest(**request_kwargs))
+        return response.link_token
+    except ApiException as e:
+        raise PlaidError(
+            message=f"Failed to create Investments upgrade token: {e.reason}",
+            status=e.status,
+        ) from e
+
+
 def create_update_link_token(
     access_token: str,
     user_id: str,
@@ -179,7 +230,7 @@ def create_update_link_token(
         ) from e
 
 
-async def list_plaid_items_for_link() -> list[dict[str, str | None]]:
+async def list_plaid_items_for_link() -> list[dict[str, object]]:
     """Return non-secret Plaid Item metadata for the Link Account page."""
     async with get_async_session() as session:
         items = await ItemsRepo(session).get_all()
@@ -190,6 +241,7 @@ async def list_plaid_items_for_link() -> list[dict[str, str | None]]:
             "institution_name": item.institution_name or item.institution_id,
             "status": item.status.value,
             "last_error_code": item.last_error_code,
+            "products": list(item.products or []),
         }
         for item in sorted(
             items,
@@ -379,7 +431,11 @@ async def _fetch_and_store_accounts(
         ) from e
 
 
-async def exchange_public_token(public_token: str, user_id: str) -> dict:
+async def exchange_public_token(
+    public_token: str,
+    user_id: str,
+    products: list[str] | None = None,
+) -> dict:
     """
     Exchange a public token for an access token and store the Plaid item.
 
@@ -401,6 +457,7 @@ async def exchange_public_token(public_token: str, user_id: str) -> dict:
     """
     client = get_plaid_client()
     settings = get_settings()
+    enabled_products = products or ["transactions"]
 
     try:
         # Exchange public token for access token
@@ -448,6 +505,9 @@ async def exchange_public_token(public_token: str, user_id: str) -> dict:
                     user_key=user_id,
                     institution_id=institution_id,
                     institution_name=institution_name,
+                    products=sorted(
+                        set(existing_item.products or []) | set(enabled_products)
+                    ),
                 )
                 db_item_id = existing_item.id
             else:
@@ -456,6 +516,7 @@ async def exchange_public_token(public_token: str, user_id: str) -> dict:
                     user_key=user_id,
                     item_id=item_id,
                     access_token_enc=encrypted_token,
+                    products=enabled_products,
                     status=PlaidItemStatus.ACTIVE,
                     institution_id=institution_id,
                     institution_name=institution_name,
@@ -471,6 +532,16 @@ async def exchange_public_token(public_token: str, user_id: str) -> dict:
 
             # Fetch and store accounts (for both new and existing items)
             await _fetch_and_store_accounts(access_token, db_item_id, session)
+
+            # Holdings are available immediately for an investment Link. Historical
+            # investment transactions are loaded by the explicit investments sync.
+            if "investments" in enabled_products:
+                await sync_investments_for_access_token(
+                    access_token=access_token,
+                    plaid_item_id=db_item_id,
+                    session=session,
+                    include_transactions=False,
+                )
 
         return {
             "item_id": str(db_item_id),  # Database UUID for internal use

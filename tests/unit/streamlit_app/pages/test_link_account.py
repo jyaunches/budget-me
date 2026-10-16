@@ -114,3 +114,64 @@ class TestTokenExchangeBridge:
 
         assert result == {"plaid_item_id": "item-123"}
         assert calls == [("public-token", "oauth-subject")]
+
+
+class TestHostedLinkAutomaticCompletion:
+    """Tests for automatic Hosted Link completion polling."""
+
+    def test_pending_session_is_not_exchanged(self, monkeypatch):
+        from budget_me.streamlit_app.pages import link_account
+
+        monkeypatch.setattr(link_account, "_finish_hosted_link_sync", lambda _: [])
+
+        status = link_account._complete_hosted_link_if_ready(
+            {"link_token": "link-token", "mode": "new"},
+            {"id": "user-123"},
+        )
+
+        assert status == "pending"
+
+    def test_completed_session_is_exchanged_automatically(self, monkeypatch):
+        from budget_me.streamlit_app.pages import link_account
+
+        exchanges = []
+        monkeypatch.setattr(
+            link_account,
+            "_finish_hosted_link_sync",
+            lambda _: ["public-token"],
+        )
+        monkeypatch.setattr(
+            link_account,
+            "_exchange_public_token_sync",
+            lambda **kwargs: exchanges.append(kwargs),
+        )
+
+        status = link_account._complete_hosted_link_if_ready(
+            {"link_token": "link-token", "mode": "new"},
+            {"id": "user-123"},
+        )
+
+        assert status == "complete"
+        assert exchanges == [
+            {
+                "public_token": "public-token",
+                "user_id": "user-123",
+                "products": None,
+            }
+        ]
+
+    def test_multiple_connections_are_not_exchanged(self, monkeypatch):
+        from budget_me.streamlit_app.pages import link_account
+
+        monkeypatch.setattr(
+            link_account,
+            "_finish_hosted_link_sync",
+            lambda _: ["public-one", "public-two"],
+        )
+
+        status = link_account._complete_hosted_link_if_ready(
+            {"link_token": "link-token", "mode": "new"},
+            {"id": "user-123"},
+        )
+
+        assert status == "multiple"

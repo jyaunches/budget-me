@@ -119,6 +119,14 @@ async def _sync_item_under_coordination(
         if not item:
             raise ValueError(f"Item {item_id} not found")
 
+        enabled_products = item.products
+        if (
+            isinstance(enabled_products, (list, tuple, set))
+            and "transactions" not in enabled_products
+        ):
+            logger.debug("Item does not have Transactions enabled; skipping")
+            return ItemSyncResult(added=0, modified=0, removed=0)
+
         # Decrypt access token
         access_token = encryptor.decrypt(item.access_token_enc)
 

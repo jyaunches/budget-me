@@ -6,6 +6,7 @@ from budget_me.cli.commands import (
     add_liabilities,
     backfill,
     categorize,
+    investments,
     liabilities,
     link,
     projects,
@@ -29,6 +30,7 @@ app.command(name="add-liabilities")(add_liabilities.add_liabilities_command)
 app.command(name="backfill-transactions")(backfill.backfill_command)
 app.command(name="categorize")(categorize.categorize_command)
 app.command(name="liabilities")(liabilities.liabilities_command)
+app.command(name="investments")(investments.investments_command)
 app.command(name="link")(link.link_command)
 app.command(name="projects")(projects.projects_command)
 app.command(name="reconcile-cc")(reconcile_cc.reconcile_cc_command)

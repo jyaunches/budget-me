@@ -15,6 +15,12 @@ from budget_me.db.models.ingest_run import (
     IngestRunStatus,
     IngestRunType,
 )
+from budget_me.db.models.investment import (
+    InvestmentHolding,
+    InvestmentHoldingSnapshot,
+    InvestmentSecurity,
+    InvestmentTransaction,
+)
 from budget_me.db.models.loan_details import LoanDetails, LoanType
 from budget_me.db.models.merchant import MerchantMap, MerchantRule
 from budget_me.db.models.monthly_snapshot import MonthlySnapshot, SnapshotStatus
@@ -88,4 +94,9 @@ __all__ = [
     "IngestRunType",
     "IngestRunStatus",
     "IngestRunItemStatus",
+    # Investments
+    "InvestmentSecurity",
+    "InvestmentHolding",
+    "InvestmentHoldingSnapshot",
+    "InvestmentTransaction",
 ]

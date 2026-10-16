@@ -130,24 +130,27 @@ See [Supabase and application secrets](self-hosting.md#2-configure-supabase-and-
 ## 4. Configure Plaid Sandbox
 
 Transactions provides account activity. Liabilities provides supported
-credit-card and loan details used by the debt-related screens.
+credit-card and loan details used by the debt-related screens. Investments is
+optional and provides security-level holdings and investment transactions.
 
 **Agent**
 
 - Keep `PLAID_ENV=sandbox`.
 - Explain why a complete setup enables both Transactions and Liabilities.
+- Explain that Investments requires separate product access and Item consent.
 - Start Streamlit locally and guide the human to **Link Account**.
-- Validate status, transactions, balances, and liability synchronization.
+- Validate status, transactions, balances, liabilities, and requested holdings.
 
 **Human**
 
 - Create a Plaid team and accept its terms.
-- Enable Transactions and Liabilities.
+- Enable Transactions and Liabilities, and request Investments if needed.
 - Enter the Sandbox client ID and secret into `.env` privately.
-- Personally complete Link, consent, and any OAuth prompts.
+- Personally complete Link, consent, re-consent, and any OAuth prompts.
 
 **Complete when:** synthetic Items, accounts, balances, transactions, and
-supported liabilities appear, with no live institution connected.
+supported liabilities and requested holdings appear, with no live institution
+connected.
 
 See [Link Plaid Sandbox](self-hosting.md#3-link-plaid-sandbox-and-run-the-first-sync).
 

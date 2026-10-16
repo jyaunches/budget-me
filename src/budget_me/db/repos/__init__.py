@@ -6,6 +6,7 @@ from budget_me.db.repos.base import BaseRepository
 from budget_me.db.repos.categorization_rules import CategorizationRulesRepo
 from budget_me.db.repos.cursors import CursorsRepo
 from budget_me.db.repos.ingest_runs import IngestRunsRepo
+from budget_me.db.repos.investments_repo import InvestmentsRepo
 from budget_me.db.repos.items import ItemsRepo
 from budget_me.db.repos.liabilities_repo import LiabilitiesRepo
 from budget_me.db.repos.merchants import MerchantsRepo
@@ -23,5 +24,6 @@ __all__ = [
     "TransactionsRepo",
     "MerchantsRepo",
     "IngestRunsRepo",
+    "InvestmentsRepo",
     "CursorsRepo",
 ]

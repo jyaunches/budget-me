@@ -22,6 +22,7 @@ from budget_me.db.models.account_balance_snapshot import AccountBalanceSnapshot
 from budget_me.db.models.anticipated_item import AnticipatedItem
 from budget_me.db.models.category_budget import CategoryBudget
 from budget_me.db.models.credit_liability import CreditLiability, CreditLiabilityApr
+from budget_me.db.models.investment import InvestmentHolding
 from budget_me.db.models.loan_details import LoanDetails
 from budget_me.db.models.monthly_snapshot import MonthlySnapshot, SnapshotStatus
 from budget_me.db.models.plaid_item import PlaidItem, PlaidItemStatus
@@ -397,6 +398,60 @@ def get_all_accounts_with_details(session: Session) -> list[dict]:
             "is_excluded": row.is_excluded,
             "paying_account_id": row.paying_account_id,
             "institution_id": row.institution_id,
+        }
+        for row in rows
+    ]
+
+
+def get_investment_holdings_summary(session: Session) -> list[dict]:
+    """Summarize current Plaid investment holdings by account and currency.
+
+    Values come from Investments holdings rather than the account-level balance,
+    which prevents retirement and portfolio views from double-counting securities.
+    """
+    stmt = (
+        select(
+            Account.account_id,
+            Account.name,
+            Account.display_name,
+            Account.type,
+            Account.subtype,
+            Account.is_excluded,
+            PlaidItem.institution_name,
+            InvestmentHolding.iso_currency_code,
+            InvestmentHolding.unofficial_currency_code,
+            func.sum(InvestmentHolding.institution_value).label("current_value"),
+            func.sum(InvestmentHolding.cost_basis).label("cost_basis"),
+        )
+        .join(Account, InvestmentHolding.account_id == Account.account_id)
+        .join(PlaidItem, InvestmentHolding.plaid_item_id == PlaidItem.id)
+        .group_by(
+            Account.account_id,
+            Account.name,
+            Account.display_name,
+            Account.type,
+            Account.subtype,
+            Account.is_excluded,
+            PlaidItem.institution_name,
+            InvestmentHolding.iso_currency_code,
+            InvestmentHolding.unofficial_currency_code,
+        )
+        .order_by(PlaidItem.institution_name, Account.name)
+    )
+
+    rows = session.execute(stmt).fetchall()
+    return [
+        {
+            "account_id": row.account_id,
+            "name": row.name,
+            "display_name": row.display_name,
+            "type": row.type,
+            "subtype": row.subtype,
+            "is_excluded": row.is_excluded,
+            "institution_name": row.institution_name,
+            "currency": row.iso_currency_code or row.unofficial_currency_code or "USD",
+            "current_value": float(row.current_value or 0),
+            "cost_basis": float(row.cost_basis) if row.cost_basis is not None else None,
         }
         for row in rows
     ]
