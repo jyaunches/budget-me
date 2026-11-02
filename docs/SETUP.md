@@ -148,6 +148,13 @@ optional and provides security-level holdings and investment transactions.
 - Enter the Sandbox client ID and secret into `.env` privately.
 - Personally complete Link, consent, re-consent, and any OAuth prompts.
 
+For a new bank connection, Budget Me opens Plaid Hosted Link in a separate
+secure browser tab. Complete Plaid Link there, return to Budget Me, and select
+**Finish Connection**. For an expired connection, use **Check Connection
+Status**, choose **Reconnect** for the affected institution, complete Plaid's
+update flow, and select **Verify Reconnection**. OAuth institutions also
+require the configured redirect URI to match the Plaid Dashboard allowlist.
+
 **Complete when:** synthetic Items, accounts, balances, transactions, and
 supported liabilities and requested holdings appear, with no live institution
 connected.
@@ -166,7 +173,15 @@ Walk through:
 4. Debt
 5. Budget
 6. Yearly Forecast
-7. Monthly Snapshot
+7. Retirement Planner
+8. Monthly Snapshot
+
+The Retirement Planner can load current holdings from Plaid Investments and
+lets the human edit or add starting holdings, contributions, equity awards,
+home and mortgage values, growth rates, and inflation assumptions. Its editable
+inputs are held in the current Streamlit session; they are not saved as a
+retirement plan. Treat its projections as scenarios, not forecasts or financial
+advice.
 
 Use packaged categorization rules first. Enable external inference or merchant
 search only after the human approves those providers to receive merchant
@@ -179,6 +194,8 @@ descriptors.
 - Confirm card-paying accounts, payment strategies, minimums, APRs, and
   promotional expirations.
 - Verify budgets and forecasts.
+- Review retirement assumptions and confirm whether the displayed holdings
+  came from Plaid or were entered manually.
 - Approve every reconciliation and month-close decision.
 
 **Complete when:** missing information remains explicitly unknown rather than

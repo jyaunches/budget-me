@@ -175,7 +175,9 @@ This binds to `127.0.0.1`. Keep it loopback-only while
 `AUTH_REQUIRED=false`.
 
 Open [http://localhost:8501](http://localhost:8501), choose **Link Account**,
-and complete Plaid Link yourself. Plaid's current
+and choose **Connect New Bank Account**. Budget Me opens Plaid Hosted Link in a
+separate secure browser tab. Complete the connection there, return to the
+Streamlit page, and select **Finish Connection**. Plaid's current
 [Sandbox credentials](https://plaid.com/docs/sandbox/test-credentials/) provide
 synthetic users and institutions.
 
@@ -183,6 +185,12 @@ For an existing connection, choose **Check Connection Status**, then **Enable
 Investments** for that institution and complete the additional consent flow.
 For a separate investment institution, choose **Connect New Investment
 Account**. Product access may not be available until Plaid approves it.
+
+If a connection needs reauthentication, choose **Check Connection Status** and
+then **Reconnect** beside that institution. Complete Plaid's update flow and
+select **Verify Reconnection** to let Budget Me confirm access and refresh its
+accounts. OAuth institutions require `PLAID_REDIRECT_URI` to exactly match the
+redirect URI allowlisted in the Plaid Dashboard.
 
 Run the initial synchronization:
 
@@ -201,6 +209,12 @@ Refresh Streamlit and confirm:
 - investment holdings for Items that have Investments consent;
 - categorization-rule counts; and
 - no live institution or Production Item.
+
+The **Retirement Planner** can load synchronized investment holdings and
+provides editable scenario inputs for contributions, equity awards, home value,
+mortgage, growth, and inflation. The planner keeps its edited inputs in the
+current Streamlit session rather than saving them as a persistent plan. Review
+the assumptions before relying on a projection.
 
 Liabilities is part of the complete application setup because the Credit Cards
 and Debt screens need supported APR, payment, and loan details. When Plaid does
