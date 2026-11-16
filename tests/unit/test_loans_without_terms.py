@@ -97,13 +97,33 @@ def test_debt_page_renders_missing_terms_and_counts_balance(loan_session, monkey
         "get_expiring_promos",
     ):
         monkeypatch.setattr(db, name, lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        db,
+        "get_cc_calculated_interest",
+        lambda session: [
+            {
+                "account_name": "Example Card",
+                "mask": "0000",
+                "balance": 100,
+                "payment_strategy": "promotional_paydown",
+                "calculated_interest": None,
+                "allocation_reconciled": False,
+                "balance_updated_at": None,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        db,
+        "get_cc_interest_from_transactions",
+        lambda session, **kwargs: {"2026-01": {"test-card": 10}},
+    )
     app = AppTest.from_file(
         Path("src/budget_me/streamlit_app/pages/debt.py").resolve()
     ).run()
     assert not app.exception
     assert (
         next(metric for metric in app.metric if metric.label == "Total Debt").value
-        == "$10,000.00"
+        == "$10,100.00"
     )
     assert any("Auto Loan" in expander.label for expander in app.expander)
     assert any("terms are missing" in message.value for message in app.info)

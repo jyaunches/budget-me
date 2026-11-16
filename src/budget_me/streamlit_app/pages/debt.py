@@ -428,9 +428,11 @@ if cc_interest_history and credit_cards:
         actual_total = sum(cc_interest_history[month].values())
 
         # Use current calculated interest (approximation - would be same for recent months)
-        calculated_total = sum(card["calculated_interest"] for card in credit_cards)
+        calculated_total = None if unreconciled_cards else cc_interest
 
-        difference = actual_total - calculated_total
+        difference = (
+            actual_total - calculated_total if calculated_total is not None else None
+        )
 
         comparison_rows.append(
             {
