@@ -46,8 +46,8 @@ if not loans and not credit_cards:
 total_debt = sum(loan["balance"] for loan in loans) + sum(
     card["balance"] for card in credit_cards
 )
-total_monthly_payment = sum(loan["monthly_payment"] for loan in loans)
-total_monthly_interest = sum(loan["monthly_interest"] for loan in loans) + sum(
+total_monthly_payment = sum(loan["monthly_payment"] or 0 for loan in loans)
+total_monthly_interest = sum(loan["monthly_interest"] or 0 for loan in loans) + sum(
     card["calculated_interest"] or 0 for card in credit_cards
 )
 total_annual_interest = total_monthly_interest * 12
@@ -82,19 +82,39 @@ if stale_debts:
     )
     st.warning(f"Debt balances have not refreshed in more than 3 days: {debt_names}.")
 
+incomplete_loans = [
+    loan
+    for loan in loans
+    if loan["interest_rate"] is None or loan["monthly_payment"] is None
+]
+if incomplete_loans:
+    st.info(
+        "Some loan terms are missing. Their balances are included in Total Debt; "
+        "payment and interest totals include only known amounts. "
+        "Add the APR and monthly payment from your loan statement."
+    )
+
 # Display summary metrics
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric("Total Debt", f"${total_debt:,.2f}")
 with col2:
-    st.metric("Monthly Payments", f"${total_monthly_payment:,.2f}")
+    st.metric(
+        "Known Monthly Payments" if incomplete_loans else "Monthly Payments",
+        f"${total_monthly_payment:,.2f}",
+    )
 with col3:
     interest_label = (
-        "Known Monthly Interest" if unreconciled_cards else "Monthly Interest"
+        "Known Monthly Interest"
+        if unreconciled_cards or incomplete_loans
+        else "Monthly Interest"
     )
     st.metric(interest_label, f"${total_monthly_interest:,.2f}")
 with col4:
-    st.metric("Annual Interest", f"${total_annual_interest:,.2f}")
+    st.metric(
+        "Known Annual Interest" if incomplete_loans else "Annual Interest",
+        f"${total_annual_interest:,.2f}",
+    )
 
 st.divider()
 
@@ -130,19 +150,28 @@ if mortgage_loans:
             detail_col1, detail_col2, detail_col3 = st.columns(3)
             with detail_col1:
                 st.write(f"Balance: **${loan['balance']:,.2f}**")
-                st.write(f"Rate: **{loan['interest_rate']:.2f}%**")
+                if loan["interest_rate"] is None:
+                    st.write("Rate: **Not provided**")
+                else:
+                    st.write(f"Rate: **{loan['interest_rate']:.2f}%**")
             with detail_col2:
-                st.write(f"Payment: **${loan['monthly_payment']:,.2f}/mo**")
-                st.write(
-                    f"Monthly Interest: **${loan['monthly_interest']:,.2f}** (calculated)"
-                )
+                if loan["monthly_payment"] is None:
+                    st.write("Payment: **Not provided**")
+                else:
+                    st.write(f"Payment: **${loan['monthly_payment']:,.2f}/mo**")
+                if loan["monthly_interest"] is None:
+                    st.write("Monthly Interest: **Unknown until APR is provided**")
+                else:
+                    st.write(
+                        f"Monthly Interest: **${loan['monthly_interest']:,.2f}** (calculated)"
+                    )
             with detail_col3:
                 if loan["maturity_date"]:
                     st.write(f"Maturity: **{loan['maturity_date'].strftime('%b %Y')}**")
 
             st.caption(
                 f"Balance refreshed {_format_refresh_date(loan['balance_updated_at'])}. "
-                f"Loan terms are {loan['terms_source']} and were last updated "
+                f"Loan terms source: {loan['terms_source'] or 'not provided'}; last updated "
                 f"{_format_refresh_date(loan['terms_updated_at'])}."
             )
 
@@ -180,19 +209,28 @@ if auto_loans:
             detail_col1, detail_col2, detail_col3 = st.columns(3)
             with detail_col1:
                 st.write(f"Balance: **${loan['balance']:,.2f}**")
-                st.write(f"Rate: **{loan['interest_rate']:.2f}%**")
+                if loan["interest_rate"] is None:
+                    st.write("Rate: **Not provided**")
+                else:
+                    st.write(f"Rate: **{loan['interest_rate']:.2f}%**")
             with detail_col2:
-                st.write(f"Payment: **${loan['monthly_payment']:,.2f}/mo**")
-                st.write(
-                    f"Monthly Interest: **${loan['monthly_interest']:,.2f}** (calculated)"
-                )
+                if loan["monthly_payment"] is None:
+                    st.write("Payment: **Not provided**")
+                else:
+                    st.write(f"Payment: **${loan['monthly_payment']:,.2f}/mo**")
+                if loan["monthly_interest"] is None:
+                    st.write("Monthly Interest: **Unknown until APR is provided**")
+                else:
+                    st.write(
+                        f"Monthly Interest: **${loan['monthly_interest']:,.2f}** (calculated)"
+                    )
             with detail_col3:
                 if loan["maturity_date"]:
                     st.write(f"Maturity: **{loan['maturity_date'].strftime('%b %Y')}**")
 
             st.caption(
                 f"Balance refreshed {_format_refresh_date(loan['balance_updated_at'])}. "
-                f"Loan terms are {loan['terms_source']} and were last updated "
+                f"Loan terms source: {loan['terms_source'] or 'not provided'}; last updated "
                 f"{_format_refresh_date(loan['terms_updated_at'])}."
             )
 
@@ -348,10 +386,10 @@ st.header("Interest Analysis")
 
 # Calculate interest breakdown by category
 mortgage_interest = sum(
-    loan["monthly_interest"] for loan in loans if loan["loan_type"] == "mortgage"
+    loan["monthly_interest"] or 0 for loan in loans if loan["loan_type"] == "mortgage"
 )
 auto_interest = sum(
-    loan["monthly_interest"] for loan in loans if loan["loan_type"] == "auto"
+    loan["monthly_interest"] or 0 for loan in loans if loan["loan_type"] == "auto"
 )
 cc_interest = sum(card["calculated_interest"] or 0 for card in credit_cards)
 

@@ -608,7 +608,7 @@ def get_zero_percent_balance_schedule(session: Session) -> list[dict]:
 def get_loans_with_interest(session: Session) -> list[dict]:
     """Get loan data with calculated monthly interest.
 
-    Joins loan_details -> accounts to get current balances.
+    Includes synced loan accounts even when loan terms have not been entered.
     Calculates monthly interest as: (balance × rate / 100) / 12
 
     Returns:
@@ -620,22 +620,28 @@ def get_loans_with_interest(session: Session) -> list[dict]:
 
     stmt = (
         select(
-            LoanDetails.loan_type,
+            func.coalesce(LoanDetails.loan_type, Account.subtype, "other").label(
+                "loan_type"
+            ),
             func.coalesce(Account.display_name, Account.name).label("account_name"),
             Account.mask,
             func.coalesce(Account.balance_current, 0).label("balance"),
             LoanDetails.interest_rate,
             LoanDetails.monthly_payment,
             LoanDetails.maturity_date,
-            LoanDetails.lender_name,
+            func.coalesce(LoanDetails.lender_name, PlaidItem.institution_name).label(
+                "lender_name"
+            ),
             LoanDetails.collateral_description,
             LoanDetails.source.label("terms_source"),
             LoanDetails.updated_at.label("terms_updated_at"),
             Account.updated_at.label("balance_updated_at"),
         )
-        .join(Account, LoanDetails.account_id == Account.account_id)
+        .select_from(Account)
+        .outerjoin(LoanDetails, LoanDetails.account_id == Account.account_id)
         .join(PlaidItem, Account.plaid_item_id == PlaidItem.id)
         .where(
+            Account.type == "loan",
             Account.is_excluded.is_(False),
             PlaidItem.status == PlaidItemStatus.ACTIVE,
         )
@@ -649,8 +655,8 @@ def get_loans_with_interest(session: Session) -> list[dict]:
     for row in rows:
         # Calculate monthly interest: (balance × rate / 100) / 12
         balance = float(row.balance)
-        rate = float(row.interest_rate)
-        monthly_interest = (balance * rate / 100) / 12
+        rate = float(row.interest_rate) if row.interest_rate is not None else None
+        monthly_interest = (balance * rate / 100) / 12 if rate is not None else None
 
         loans.append(
             {
@@ -659,7 +665,11 @@ def get_loans_with_interest(session: Session) -> list[dict]:
                 "mask": row.mask,
                 "balance": balance,
                 "interest_rate": rate,
-                "monthly_payment": float(row.monthly_payment),
+                "monthly_payment": (
+                    float(row.monthly_payment)
+                    if row.monthly_payment is not None
+                    else None
+                ),
                 "maturity_date": row.maturity_date,
                 "lender_name": row.lender_name,
                 "collateral_description": row.collateral_description,
